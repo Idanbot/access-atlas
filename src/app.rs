@@ -408,19 +408,33 @@ fn target_focus_zoom(target: &Target) -> f64 {
 
 fn approach_angle(current: f64, target: f64, max_step: f64) -> f64 {
     let delta = shortest_angle(target - current);
-    if delta.abs() <= max_step {
+    if delta.abs() <= 0.0005 {
         target
     } else {
-        current + delta.signum() * max_step
+        let ease_rate = (delta * 3.5).clamp(-max_step, max_step);
+        let min_rate = (max_step * 0.25).min(delta.abs());
+        let step = if ease_rate.abs() < min_rate {
+            delta.signum() * min_rate
+        } else {
+            ease_rate
+        };
+        current + step
     }
 }
 
 fn approach_value(current: f64, target: f64, max_step: f64) -> f64 {
     let delta = target - current;
-    if delta.abs() <= max_step {
+    if delta.abs() <= 0.0005 {
         target
     } else {
-        current + delta.signum() * max_step
+        let ease_rate = (delta * 3.0).clamp(-max_step, max_step);
+        let min_rate = (max_step * 0.25).min(delta.abs());
+        let step = if ease_rate.abs() < min_rate {
+            delta.signum() * min_rate
+        } else {
+            ease_rate
+        };
+        current + step
     }
 }
 

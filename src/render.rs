@@ -456,7 +456,7 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
 
     // Top-Left Telemetry Badge
     let top_left = format!(
-        " LAT {:.1}°{} · LON {:.1}°{} ",
+        " LAT {:.1}°{} · LON {:.1}°{} · ▲ NORTH UP ",
         lat.abs(),
         lat_dir,
         lon_val,
@@ -659,6 +659,15 @@ fn build_overlays(
                     priority: 4,
                 });
 
+                // Cardinal North indicator pip
+                points.push(PointMarker {
+                    x,
+                    y: y - 3.8,
+                    radius_sq: 0.65,
+                    color: theme.active_target,
+                    priority: 4,
+                });
+
                 // Subtle expanding radar pulse
                 let ping_phase = (app.continuous_time().as_secs_f64() * 1.3).fract();
                 let ping_radius = 2.8 + ping_phase * 3.5;
@@ -779,11 +788,11 @@ fn dot_sample(
 
         // Clean dark ocean (no random noise dots in the water)
         let (base_color, density) = if map.boundary {
-            (theme.border, 0.98)
+            (theme.border, 1.0)
         } else if map.coast {
-            (theme.coast, 0.98)
+            (theme.coast, 1.0)
         } else if map.land {
-            (theme.land, 0.85)
+            (theme.land, 0.90)
         } else {
             // Clean ocean
             (theme.ocean, 0.0)

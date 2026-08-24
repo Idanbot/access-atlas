@@ -173,7 +173,7 @@ fn main() {
             let steps = (((d_lon.abs() * MASK_WIDTH as f64 / 360.0)
                 .max(d_lat.abs() * MASK_HEIGHT as f64 / 180.0)
                 .max(1.0))
-                * 1.5)
+                * 2.0)
                 .ceil() as usize;
 
             for s in 0..=steps {
@@ -187,17 +187,8 @@ fn main() {
                     as usize)
                     .min(MASK_HEIGHT - 1);
 
-                for dy in -1..=1 {
-                    for dx in -1..=1 {
-                        if dx * dx + dy * dy > 1 {
-                            continue;
-                        }
-                        let nx = ((bx as isize + dx).rem_euclid(MASK_WIDTH as isize)) as usize;
-                        let ny = ((by as isize + dy).clamp(0, MASK_HEIGHT as isize - 1)) as usize;
-                        let b_idx = ny * MASK_WIDTH + nx;
-                        boundary_bits[b_idx / 8] |= 1 << (b_idx % 8);
-                    }
-                }
+                let b_idx = by * MASK_WIDTH + bx;
+                boundary_bits[b_idx / 8] |= 1 << (b_idx % 8);
             }
         }
     }

@@ -215,7 +215,7 @@ impl App {
     }
 
     pub fn camera_azimuth_deg(&self) -> f64 {
-        (PI / 2.0 - self.rotation).to_degrees().rem_euclid(360.0)
+        self.rotation.to_degrees().rem_euclid(360.0)
     }
 
     pub fn camera_pitch_deg(&self) -> f64 {
@@ -339,12 +339,16 @@ impl App {
     }
 
     pub fn zoom_in(&mut self) {
+        self.transition = None;
         self.focus_zoom = (self.focus_zoom * 1.18).min(3.5);
+        self.zoom = self.focus_zoom;
         self.dirty = true;
     }
 
     pub fn zoom_out(&mut self) {
+        self.transition = None;
         self.focus_zoom = (self.focus_zoom / 1.18).max(0.6);
+        self.zoom = self.focus_zoom;
         self.dirty = true;
     }
 
@@ -453,7 +457,7 @@ impl App {
 }
 
 fn target_focus_rotation(target: &Target) -> f64 {
-    PI / 2.0 - target.location.longitude.to_radians()
+    target.location.longitude.to_radians()
 }
 
 fn target_focus_pitch(target: &Target) -> f64 {
@@ -651,6 +655,35 @@ mod tests {
         assert!((app.zoom() - target_zoom).abs() < 0.001);
         assert!(shortest_angle(app.rotation() - app.focus_rotation()).abs() < 0.001);
         assert!((app.pitch() - app.focus_pitch()).abs() < 0.001);
+    }
+
+    #[test]
+    fn manual_zoom_in_and_out_does_not_bounce_after_ticks() {
+        let mut app = app();
+        let initial_zoom = app.zoom();
+
+        // Manual zoom in
+        app.handle_key(key(KeyCode::Char('+'), KeyModifiers::NONE));
+        let zoomed_in = app.zoom();
+        assert!(zoomed_in > initial_zoom);
+
+        // Tick multiple frames
+        app.tick(Duration::from_millis(50));
+        app.tick(Duration::from_millis(100));
+        app.tick(Duration::from_millis(500));
+        // Zoom must stay exactly at the manually set zoom level without bouncing back
+        assert_eq!(app.zoom(), zoomed_in);
+
+        // Manual zoom out twice
+        app.handle_key(key(KeyCode::Char('-'), KeyModifiers::NONE));
+        app.handle_key(key(KeyCode::Char('-'), KeyModifiers::NONE));
+        let zoomed_out = app.zoom();
+        assert!(zoomed_out < zoomed_in);
+
+        // Tick multiple frames
+        app.tick(Duration::from_millis(100));
+        app.tick(Duration::from_millis(800));
+        assert_eq!(app.zoom(), zoomed_out);
     }
 
     #[test]

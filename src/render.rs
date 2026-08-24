@@ -491,8 +491,11 @@ fn render_city_label(
 
     let label_title = format!(" ◉ {} ", target.label);
     let label_meta = format!(
-        "   {} · {} · {} · {} ",
-        platform, account, vm_or_cluster, country
+        "   {} ▏{} ▏{} ▏{} ",
+        platform.to_lowercase(),
+        account,
+        vm_or_cluster,
+        country
     );
 
     let max_len = label_title.chars().count().max(label_meta.chars().count()) as i32;
@@ -521,7 +524,7 @@ fn render_city_label(
             (draw_y + 1) as u16,
             label_meta,
             Style::default()
-                .fg(to_color(theme.hud_text))
+                .fg(Color::DarkGray)
                 .bg(to_color(theme.background)),
         );
     }
@@ -592,8 +595,12 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
 
     let bot_left_title = format!(" ⌖ LOCK: {} ", target.label);
     let bot_left_meta = format!(
-        "   Platform: {} · Account: {} · Target: {} · Country: {} ({}) ",
-        platform, account, vm_or_cluster, country, target.location.city
+        "   {} ▏{} ▏{} ▏{} ({}) ",
+        platform.to_lowercase(),
+        account,
+        vm_or_cluster,
+        country,
+        target.location.city
     );
 
     if area.height > 3 {
@@ -611,7 +618,7 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
             area.bottom().saturating_sub(2),
             bot_left_meta,
             Style::default()
-                .fg(to_color(theme.hud_text))
+                .fg(Color::DarkGray)
                 .bg(to_color(theme.background)),
         );
     } else if area.height > 2 {
@@ -884,24 +891,28 @@ fn dot_sample(
 
     // Inside globe sphere:
     if sphere_distance <= 1.0 {
-        let normal_z = (1.0 - sphere_distance).sqrt();
-        let yaw_x = normalized_x;
-        let yaw_y = -normalized_y * geometry.pitch_cos + normal_z * geometry.pitch_sin;
-        let yaw_z = normalized_y * geometry.pitch_sin + normal_z * geometry.pitch_cos;
-        let world_normal = DVec3::new(
-            yaw_x * geometry.rotation_cos + yaw_z * geometry.rotation_sin,
-            yaw_y,
-            -yaw_x * geometry.rotation_sin + yaw_z * geometry.rotation_cos,
-        );
+        let x_double_prime = normalized_x;
+        let y_double_prime = -normalized_y;
+        let z_double_prime = (1.0 - sphere_distance).sqrt();
 
-        let latitude = world_normal.y.asin().to_degrees();
-        let longitude = world_normal.z.atan2(world_normal.x).to_degrees();
+        // Invert pitch around X-axis
+        let y_prime = y_double_prime * geometry.pitch_cos + z_double_prime * geometry.pitch_sin;
+        let z_prime = -y_double_prime * geometry.pitch_sin + z_double_prime * geometry.pitch_cos;
+        let x_prime = x_double_prime;
 
-        let brightness =
-            (world_normal.x * -0.437_529 + world_normal.y * 0.340_300 + world_normal.z * 0.893_153)
-                .max(0.0)
-                .mul_add(0.58, 0.42)
-                .min(1.0);
+        // Invert yaw around Y-axis
+        let x = x_prime * geometry.rotation_cos + z_prime * geometry.rotation_sin;
+        let z = -x_prime * geometry.rotation_sin + z_prime * geometry.rotation_cos;
+        let y = y_prime;
+
+        let world_normal = DVec3::new(x, y, z);
+        let latitude = y.asin().to_degrees();
+        let longitude = x.atan2(z).to_degrees();
+
+        let brightness = (-world_normal.x * 0.35 + world_normal.y * 0.45 + world_normal.z * 0.82)
+            .max(0.0)
+            .mul_add(0.55, 0.45)
+            .min(1.0);
 
         let map = map_sample(latitude, longitude);
 
@@ -979,7 +990,7 @@ struct MapSample {
 pub fn geo_to_vec(latitude: f64, longitude: f64) -> DVec3 {
     let lat = latitude.to_radians();
     let lon = longitude.to_radians();
-    DVec3::new(lat.cos() * lon.cos(), lat.sin(), lat.cos() * lon.sin())
+    DVec3::new(lat.cos() * lon.sin(), lat.sin(), lat.cos() * lon.cos())
 }
 
 fn project_vec_camera(
@@ -991,18 +1002,22 @@ fn project_vec_camera(
     radius_x: f64,
     radius_y: f64,
 ) -> Option<(f64, f64, f64)> {
-    let yaw_x = point.x * rotation.cos() - point.z * rotation.sin();
-    let yaw_z = point.x * rotation.sin() + point.z * rotation.cos();
-    let rotated_x = yaw_x;
-    let rotated_y = point.y * pitch.cos() - yaw_z * pitch.sin();
-    let rotated_z = point.y * pitch.sin() + yaw_z * pitch.cos();
-    if rotated_z < 0.0 {
+    let x_prime = point.x * rotation.cos() - point.z * rotation.sin();
+    let z_prime = point.x * rotation.sin() + point.z * rotation.cos();
+    let y_prime = point.y;
+
+    let x_double_prime = x_prime;
+    let y_double_prime = y_prime * pitch.cos() - z_prime * pitch.sin();
+    let z_double_prime = y_prime * pitch.sin() + z_prime * pitch.cos();
+
+    if z_double_prime < 0.0 {
         return None;
     }
+
     Some((
-        center_x + rotated_x * radius_x,
-        center_y - rotated_y * radius_y,
-        rotated_z,
+        center_x + x_double_prime * radius_x,
+        center_y - y_double_prime * radius_y,
+        z_double_prime,
     ))
 }
 
@@ -1072,7 +1087,9 @@ mod tests {
     fn geographic_origin_is_on_unit_sphere() {
         let point = geo_to_vec(0.0, 0.0);
         assert!((point.length() - 1.0).abs() < f64::EPSILON);
-        assert!((point.x - 1.0).abs() < f64::EPSILON);
+        assert!((point.z - 1.0).abs() < f64::EPSILON);
+        assert!(point.x.abs() < f64::EPSILON);
+        assert!(point.y.abs() < f64::EPSILON);
     }
 
     #[test]
@@ -1081,11 +1098,12 @@ mod tests {
             crate::model::Topology::from_json(include_str!("../data/demo-topology.json"))
                 .expect("fixture should parse");
         let target = &topology.targets[0];
-        let rotation = std::f64::consts::PI / 2.0 - target.location.longitude.to_radians();
+        let rotation = target.location.longitude.to_radians();
+        let pitch = target.location.latitude.to_radians();
         let projected = project_vec_camera(
             geo_to_vec(target.location.latitude, target.location.longitude),
             rotation,
-            target.location.latitude.to_radians(),
+            pitch,
             10.0,
             10.0,
             5.0,
@@ -1095,6 +1113,32 @@ mod tests {
         assert!((projected.0 - 10.0).abs() < 0.001);
         assert!((projected.1 - 10.0).abs() < 0.001);
         assert!(projected.2 > 0.99);
+    }
+
+    #[test]
+    fn east_and_west_project_to_correct_sides_of_screen() {
+        let rot = 4.90_f64.to_radians();
+        let pitch = 52.37_f64.to_radians();
+
+        // Tokyo is East of Amsterdam (139.65E)
+        let tokyo = geo_to_vec(35.68, 139.65);
+        let proj_tokyo = project_vec_camera(tokyo, rot, pitch, 100.0, 100.0, 50.0, 50.0)
+            .expect("Tokyo should be visible");
+        assert!(
+            proj_tokyo.0 > 100.0,
+            "East (Tokyo) must be on the right side of the screen (>100.0), got {}",
+            proj_tokyo.0
+        );
+
+        // Ashburn is West of Amsterdam (-77.49W)
+        let ashburn = geo_to_vec(39.04, -77.49);
+        let proj_ashburn = project_vec_camera(ashburn, rot, pitch, 100.0, 100.0, 50.0, 50.0)
+            .expect("Ashburn should be visible");
+        assert!(
+            proj_ashburn.0 < 100.0,
+            "West (Ashburn) must be on the left side of the screen (<100.0), got {}",
+            proj_ashburn.0
+        );
     }
 
     #[test]

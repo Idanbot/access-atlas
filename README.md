@@ -66,7 +66,7 @@ The fixture includes mocked examples for:
 - AWS SSM, API, bastion, and SSH access in Frankfurt
 - Azure CLI, Bastion, VM inventory, and guest-agent access in Dublin
 
-The coastline mask and thin country-border overlay use public-domain [Natural Earth 110m data](https://github.com/nvkelso/natural-earth-vector), embedded in `data/ne_110m_land.json` and `data/ne_110m_boundaries.json`. The renderer converts those source geometries into compact 1-degree masks once, then samples the masks during frames. All addresses are documentation or private addresses, and identifiers are fake. The fixture is not an instruction to connect to any target.
+The coastline mask and thin country-border overlay use public-domain [Natural Earth 50m data](https://github.com/nvkelso/natural-earth-vector), embedded in `data/ne_50m_land.json` and `data/ne_50m_boundaries.json`. The renderer converts those source geometries into high-resolution 0.25-degree masks (1440×720) with spatial-grid acceleration, then samples the masks during frames. All addresses are documentation or private addresses, and identifiers are fake. The fixture is not an instruction to connect to any target.
 
 ## Docker checks
 

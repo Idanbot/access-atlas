@@ -10,8 +10,11 @@ use ratatui::{
 };
 use std::sync::OnceLock;
 
-const MASK_WIDTH: usize = 720;
-const MASK_HEIGHT: usize = 360;
+const MASK_WIDTH: usize = 1440;
+const MASK_HEIGHT: usize = 720;
+
+const GRID_COLS: usize = 72; // 5 degrees per column
+const GRID_ROWS: usize = 36; // 5 degrees per row
 
 pub const BRAILLE_DOTS: [(usize, usize, u8); 8] = [
     (0, 0, 0b0000_0001), // dot 1
@@ -914,48 +917,95 @@ fn globe_masks() -> &'static GlobeMasks {
     MASKS.get_or_init(build_globe_masks)
 }
 
-fn land_shapes() -> &'static [LandShape] {
-    static SHAPES: OnceLock<Vec<LandShape>> = OnceLock::new();
-    SHAPES
-        .get_or_init(|| {
-            let geometry: LandGeometry =
-                serde_json::from_str(include_str!("../data/ne_110m_land.json"))
-                    .expect("embedded Natural Earth land geometry must be valid JSON");
-            geometry
-                .into_iter()
-                .filter_map(|rings| {
-                    let exterior = rings.first()?;
-                    let (min_longitude, max_longitude) = exterior
-                        .iter()
-                        .map(|(longitude, _)| *longitude)
-                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-                            (min.min(value), max.max(value))
-                        });
-                    let (min_latitude, max_latitude) = exterior
-                        .iter()
-                        .map(|(_, latitude)| *latitude)
-                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-                            (min.min(value), max.max(value))
-                        });
-                    Some(LandShape {
-                        rings,
-                        min_latitude,
-                        max_latitude,
-                        min_longitude,
-                        max_longitude,
-                    })
+struct SpatialGrid {
+    shapes: Vec<LandShape>,
+    cells: Vec<Vec<usize>>,
+}
+
+fn spatial_grid() -> &'static SpatialGrid {
+    static GRID: OnceLock<SpatialGrid> = OnceLock::new();
+    GRID.get_or_init(|| {
+        let geometry: LandGeometry = serde_json::from_str(include_str!("../data/ne_50m_land.json"))
+            .expect("embedded Natural Earth 50m land geometry must be valid JSON");
+        let shapes: Vec<LandShape> = geometry
+            .into_iter()
+            .filter_map(|rings| {
+                let exterior = rings.first()?;
+                let (min_longitude, max_longitude) = exterior
+                    .iter()
+                    .map(|(longitude, _)| *longitude)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+                        (min.min(value), max.max(value))
+                    });
+                let (min_latitude, max_latitude) = exterior
+                    .iter()
+                    .map(|(_, latitude)| *latitude)
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
+                        (min.min(value), max.max(value))
+                    });
+                Some(LandShape {
+                    rings,
+                    min_latitude,
+                    max_latitude,
+                    min_longitude,
+                    max_longitude,
                 })
-                .collect()
-        })
-        .as_slice()
+            })
+            .collect();
+
+        let mut cells = vec![Vec::new(); GRID_ROWS * GRID_COLS];
+        for (shape_idx, shape) in shapes.iter().enumerate() {
+            let row_start = (((90.0 - shape.max_latitude) / 180.0) * GRID_ROWS as f64)
+                .floor()
+                .clamp(0.0, (GRID_ROWS - 1) as f64) as usize;
+            let row_end = (((90.0 - shape.min_latitude) / 180.0) * GRID_ROWS as f64)
+                .floor()
+                .clamp(0.0, (GRID_ROWS - 1) as f64) as usize;
+
+            let span_lon = shape.max_longitude - shape.min_longitude;
+            if span_lon >= 360.0 {
+                for r in row_start..=row_end {
+                    for c in 0..GRID_COLS {
+                        cells[r * GRID_COLS + c].push(shape_idx);
+                    }
+                }
+            } else {
+                let col_start = (((shape.min_longitude + 180.0).rem_euclid(360.0) / 360.0)
+                    * GRID_COLS as f64)
+                    .floor()
+                    .min((GRID_COLS - 1) as f64) as usize;
+                let col_end = (((shape.max_longitude + 180.0).rem_euclid(360.0) / 360.0)
+                    * GRID_COLS as f64)
+                    .floor()
+                    .min((GRID_COLS - 1) as f64) as usize;
+
+                for r in row_start..=row_end {
+                    if col_start <= col_end {
+                        for c in col_start..=col_end {
+                            cells[r * GRID_COLS + c].push(shape_idx);
+                        }
+                    } else {
+                        for c in col_start..GRID_COLS {
+                            cells[r * GRID_COLS + c].push(shape_idx);
+                        }
+                        for c in 0..=col_end {
+                            cells[r * GRID_COLS + c].push(shape_idx);
+                        }
+                    }
+                }
+            }
+        }
+
+        SpatialGrid { shapes, cells }
+    })
 }
 
 fn boundary_geometry() -> &'static [Vec<(f64, f64)>] {
     static GEOMETRY: OnceLock<Vec<Vec<(f64, f64)>>> = OnceLock::new();
     GEOMETRY
         .get_or_init(|| {
-            serde_json::from_str(include_str!("../data/ne_110m_boundaries.json"))
-                .expect("embedded Natural Earth boundary geometry must be valid JSON")
+            serde_json::from_str(include_str!("../data/ne_50m_boundaries.json"))
+                .expect("embedded Natural Earth 50m boundary geometry must be valid JSON")
         })
         .as_slice()
 }
@@ -1004,22 +1054,35 @@ fn build_globe_masks() -> GlobeMasks {
 }
 
 fn point_in_land(latitude: f64, longitude: f64) -> bool {
-    land_shapes().iter().any(|shape| {
+    let grid = spatial_grid();
+    let row = (((90.0 - latitude.clamp(-90.0, 90.0)) / 180.0) * GRID_ROWS as f64)
+        .floor()
+        .clamp(0.0, (GRID_ROWS - 1) as f64) as usize;
+    let col = (((longitude + 180.0).rem_euclid(360.0) / 360.0) * GRID_COLS as f64)
+        .floor()
+        .min((GRID_COLS - 1) as f64) as usize;
+
+    let candidate_indices = &grid.cells[row * GRID_COLS + col];
+    for &idx in candidate_indices {
+        let shape = &grid.shapes[idx];
         let longitude_span = shape.max_longitude - shape.min_longitude;
         let longitude_matches = longitude_span > 180.0
             || (shape.min_longitude..=shape.max_longitude).contains(&longitude);
         if !(shape.min_latitude..=shape.max_latitude).contains(&latitude) || !longitude_matches {
-            return false;
+            continue;
         }
-        shape.rings.first().is_some_and(|exterior| {
-            point_in_polygon(longitude, latitude, exterior)
-                && !shape
-                    .rings
-                    .iter()
-                    .skip(1)
-                    .any(|hole| point_in_polygon(longitude, latitude, hole))
-        })
-    })
+        if let Some(exterior) = shape.rings.first()
+            && point_in_polygon(longitude, latitude, exterior)
+            && !shape
+                .rings
+                .iter()
+                .skip(1)
+                .any(|hole| point_in_polygon(longitude, latitude, hole))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn mask_index(latitude: f64, longitude: f64) -> usize {
@@ -1182,10 +1245,17 @@ mod tests {
 
     #[test]
     fn land_mask_separates_europe_from_mid_atlantic() {
-        assert!(land_mask(52.37, 4.90));
-        assert!(!land_mask(0.0, -30.0));
-        assert!(land_mask(39.04, -77.49));
-        assert!(land_mask(35.68, 139.65));
+        assert!(land_mask(52.37, 4.90)); // Amsterdam
+        assert!(land_mask(51.50, -0.12)); // London, UK
+        assert!(land_mask(53.35, -6.26)); // Dublin, Ireland
+        assert!(land_mask(35.68, 139.65)); // Tokyo, Japan
+        assert!(land_mask(32.08, 34.78)); // Tel Aviv, Israel
+        assert!(land_mask(39.04, -77.49)); // Ashburn, VA
+        assert!(land_mask(-33.86, 151.20)); // Sydney, Australia
+        assert!(land_mask(-23.55, -46.63)); // São Paulo, Brazil
+        assert!(!land_mask(0.0, -30.0)); // Mid-Atlantic Ocean
+        assert!(!land_mask(0.0, 160.0)); // Pacific Ocean
+        assert!(!land_mask(-50.0, 0.0)); // South Atlantic Ocean
     }
 
     #[test]

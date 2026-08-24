@@ -10,8 +10,8 @@ use ratatui::{
 };
 use std::sync::OnceLock;
 
-const MASK_WIDTH: usize = 360;
-const MASK_HEIGHT: usize = 180;
+const MASK_WIDTH: usize = 720;
+const MASK_HEIGHT: usize = 360;
 
 pub const BRAILLE_DOTS: [(usize, usize, u8); 8] = [
     (0, 0, 0b0000_0001), // dot 1
@@ -32,9 +32,7 @@ pub struct ThemePalette {
     pub land: [u8; 3],
     pub coast: [u8; 3],
     pub border: [u8; 3],
-    pub graticule: [u8; 3],
     pub atmosphere: [u8; 3],
-    pub stars: [u8; 3],
     pub active_target: [u8; 3],
     pub other_target: [u8; 3],
     pub origin: [u8; 3],
@@ -50,13 +48,11 @@ pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
         ThemeId::CyberOrbital => ThemePalette {
             name: "Cyber Orbital",
             background: [4, 8, 16],
-            ocean: [16, 52, 88],
-            land: [40, 170, 105],
-            coast: [70, 220, 235],
-            border: [130, 225, 175],
-            graticule: [26, 75, 115],
+            ocean: [12, 36, 60],
+            land: [42, 175, 110],
+            coast: [75, 230, 245],
+            border: [135, 230, 185],
             atmosphere: [65, 175, 255],
-            stars: [110, 150, 195],
             active_target: [255, 225, 90],
             other_target: [80, 195, 240],
             origin: [255, 90, 210],
@@ -67,15 +63,13 @@ pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
             border_color: [40, 100, 145],
         },
         ThemeId::TacticalRadar => ThemePalette {
-            name: "Tactical Radar",
+            name: "Tactical Radar (P31)",
             background: [2, 10, 4],
-            ocean: [8, 40, 16],
-            land: [25, 105, 45],
-            coast: [60, 210, 95],
-            border: [95, 175, 115],
-            graticule: [35, 105, 50],
+            ocean: [6, 28, 12],
+            land: [28, 115, 50],
+            coast: [65, 225, 105],
+            border: [100, 185, 125],
             atmosphere: [50, 155, 75],
-            stars: [40, 95, 55],
             active_target: [220, 255, 225],
             other_target: [75, 185, 105],
             origin: [160, 255, 180],
@@ -88,13 +82,11 @@ pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
         ThemeId::MinimalAtlas => ThemePalette {
             name: "Minimal Slate Atlas",
             background: [14, 18, 24],
-            ocean: [28, 48, 62],
-            land: [68, 112, 92],
-            coast: [215, 195, 125],
-            border: [185, 185, 180],
-            graticule: [45, 70, 88],
+            ocean: [22, 38, 48],
+            land: [72, 118, 98],
+            coast: [220, 200, 130],
+            border: [190, 190, 185],
             atmosphere: [90, 130, 155],
-            stars: [80, 95, 115],
             active_target: [255, 198, 75],
             other_target: [125, 175, 205],
             origin: [95, 165, 245],
@@ -107,13 +99,11 @@ pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
         ThemeId::AmberCrt => ThemePalette {
             name: "Amber CRT",
             background: [16, 8, 2],
-            ocean: [48, 24, 6],
-            land: [115, 58, 14],
-            coast: [215, 125, 30],
-            border: [175, 95, 25],
-            graticule: [95, 50, 15],
+            ocean: [36, 18, 4],
+            land: [120, 62, 16],
+            coast: [225, 130, 32],
+            border: [180, 100, 28],
             atmosphere: [155, 85, 22],
-            stars: [95, 60, 25],
             active_target: [255, 225, 140],
             other_target: [185, 105, 30],
             origin: [255, 140, 40],
@@ -126,13 +116,11 @@ pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
         ThemeId::DeepSpace => ThemePalette {
             name: "Deep Space Nebula",
             background: [6, 4, 14],
-            ocean: [22, 24, 62],
-            land: [58, 42, 105],
-            coast: [140, 105, 225],
-            border: [110, 80, 185],
-            graticule: [45, 40, 95],
+            ocean: [18, 18, 48],
+            land: [64, 46, 115],
+            coast: [145, 110, 235],
+            border: [115, 85, 195],
             atmosphere: [120, 85, 220],
-            stars: [150, 140, 210],
             active_target: [255, 60, 160],
             other_target: [80, 180, 255],
             origin: [0, 235, 255],
@@ -206,10 +194,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         vertical[0],
     );
 
-    let globe_title = format!(
-        " Planetary Access Globe · 3D Parabolic Routes · [{}] ",
-        theme.name
-    );
+    let globe_title = format!(" Planetary Access Globe · [{}] ", theme.name);
     let globe_block = Block::bordered()
         .title(globe_title)
         .border_style(Style::default().fg(to_color(theme.border_color)));
@@ -288,12 +273,8 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     frame.render_widget(
         Paragraph::new(vec![
-            Line::from(
-                " Space: Pause/Resume   t: Theme   g: Grid   s: Stars   h/j/k/l: Orbit   +/-: Zoom   r: Reset",
-            ),
-            Line::from(
-                " Tab/Shift+Tab: Option   Left/Right: Target   Up/Down: Detail   q: Exit",
-            ),
+            Line::from(" Space: Pause/Resume   t: Theme   h/j/k/l: Orbit   +/-: Zoom   r: Reset"),
+            Line::from(" Tab/Shift+Tab: Option   Left/Right: Target   Up/Down: Detail   q: Exit"),
         ])
         .style(Style::default().fg(Color::DarkGray)),
         vertical[2],
@@ -312,7 +293,16 @@ impl Widget for GlobeWidget<'_> {
 }
 
 #[derive(Clone, Copy)]
-struct Overlay {
+struct PointMarker {
+    x: f64,
+    y: f64,
+    radius_sq: f64,
+    color: [u8; 3],
+    priority: u8,
+}
+
+#[derive(Clone, Copy)]
+struct RingMarker {
     x: f64,
     y: f64,
     radius: f64,
@@ -321,11 +311,11 @@ struct Overlay {
 }
 
 #[derive(Clone, Copy)]
-struct RingOverlay {
-    x: f64,
-    y: f64,
-    radius: f64,
-    thickness: f64,
+struct RouteSegment {
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
     color: [u8; 3],
     priority: u8,
 }
@@ -369,7 +359,7 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
         pitch_cos: app.pitch().cos(),
         pitch_sin: app.pitch().sin(),
     };
-    let (overlays, rings) = overlays(app, &geometry, theme);
+    let (points, rings, segments) = build_overlays(app, &geometry, theme);
 
     for cell_y in 0..area.height as usize {
         for cell_x in 0..area.width as usize {
@@ -378,11 +368,12 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
                 color: theme.background,
                 priority: 0,
             };
-            // Full 8-dot Braille grid (2x4 subpixels) for maximum resolution and no scanline tears
+            // Full 8-dot Braille grid (2x4 subpixels) for high resolution
             for (dot_x, dot_y, mask) in BRAILLE_DOTS {
                 let x = cell_x * 2 + dot_x;
                 let y = cell_y * 4 + dot_y;
-                if let Some(sample) = dot_sample(x, y, &geometry, &overlays, &rings, theme, app) {
+                if let Some(sample) = dot_sample(x, y, &geometry, &points, &rings, &segments, theme)
+                {
                     bits |= mask;
                     if sample.priority >= best_sample.priority {
                         best_sample = sample;
@@ -516,10 +507,10 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
 
     // Bottom-Right Mode Badge
     let bot_right = if app.is_paused() {
-        " [PAUSED - Space to resume] ".to_owned()
+        " [AUTO-CYCLE: PAUSED (Space to run)] ".to_owned()
     } else {
         format!(
-            " AUTO-CYCLE ({:.0}s) ",
+            " AUTO-CYCLE: LIVE ({:.0}s) ",
             (6.0 - app.elapsed().as_secs_f64()).max(0.0)
         )
     };
@@ -536,13 +527,14 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
     }
 }
 
-fn overlays(
+fn build_overlays(
     app: &App,
     geometry: &GlobeGeometry,
     theme: &ThemePalette,
-) -> (Vec<Overlay>, Vec<RingOverlay>) {
-    let mut overlays = Vec::with_capacity(96);
+) -> (Vec<PointMarker>, Vec<RingMarker>, Vec<RouteSegment>) {
+    let mut points = Vec::with_capacity(32);
     let mut rings = Vec::with_capacity(8);
+    let mut segments = Vec::with_capacity(64);
 
     let target = app.target();
     let origin = geo_to_vec(
@@ -551,7 +543,7 @@ fn overlays(
     );
     let destination = geo_to_vec(target.location.latitude, target.location.longitude);
 
-    // 1. Workstation Origin Marker (Diamond/Beacon shape)
+    // 1. Workstation Origin Marker (Clean compact beacon)
     if let Some((ox, oy, _depth)) = project_vec_camera(
         origin,
         geometry.rotation,
@@ -561,23 +553,24 @@ fn overlays(
         geometry.radius_x,
         geometry.radius_y,
     ) {
-        overlays.push(Overlay {
+        points.push(PointMarker {
             x: ox,
             y: oy,
-            radius: 1.6,
+            radius_sq: 1.25,
             color: theme.origin,
             priority: 4,
         });
     }
 
-    // 2. 3D Elevated Parabolic Great-Circle Route & Luminous Signal Packet
+    // 2. 3D Elevated Parabolic Great-Circle Route (Subtle thin 1-dot hairline)
     if app.route_progress() > 0.0 {
-        let steps = 50;
+        let steps = 60;
         let visible_steps = (steps as f32 * app.route_progress()).ceil() as usize;
 
-        // Animated packet pulse traveling along route
-        let packet_phase = (app.continuous_time().as_secs_f64() * 0.9).fract();
+        let packet_phase = (app.continuous_time().as_secs_f64() * 0.85).fract();
         let packet_step = (packet_phase * visible_steps.min(steps) as f64).round() as usize;
+
+        let mut prev_pt: Option<(f64, f64)> = None;
 
         for step in 0..=visible_steps.min(steps) {
             let amount = step as f64 / steps as f64;
@@ -594,25 +587,40 @@ fn overlays(
                 geometry.radius_x,
                 geometry.radius_y,
             ) {
-                let (color, priority, radius) = if step == packet_step {
-                    // Bright packet head
-                    (theme.packet, 5, 1.4)
-                } else if step < packet_step && packet_step - step <= 4 {
-                    // Fading luminous comet tail
-                    let tail_fade = 1.0 - (packet_step - step) as f64 / 4.0;
-                    (scale_color(theme.packet, tail_fade * 0.85 + 0.15), 3, 1.0)
-                } else {
-                    // Route line
-                    (theme.route, 2, 0.75)
-                };
+                if let Some((px, py)) = prev_pt {
+                    let (color, priority) = if step == packet_step {
+                        (theme.packet, 5)
+                    } else if step < packet_step && packet_step - step <= 4 {
+                        let tail_fade = 1.0 - (packet_step - step) as f64 / 4.0;
+                        (scale_color(theme.packet, tail_fade * 0.85 + 0.15), 3)
+                    } else {
+                        (theme.route, 2)
+                    };
 
-                overlays.push(Overlay {
-                    x,
-                    y,
-                    radius,
-                    color,
-                    priority,
-                });
+                    segments.push(RouteSegment {
+                        x1: px,
+                        y1: py,
+                        x2: x,
+                        y2: y,
+                        color,
+                        priority,
+                    });
+                }
+
+                // Traveling photon packet head dot
+                if step == packet_step {
+                    points.push(PointMarker {
+                        x,
+                        y,
+                        radius_sq: 1.25,
+                        color: theme.packet,
+                        priority: 5,
+                    });
+                }
+
+                prev_pt = Some((x, y));
+            } else {
+                prev_pt = None;
             }
         }
     }
@@ -634,32 +642,40 @@ fn overlays(
         ) {
             let active = index == app.target_index();
             if active {
-                // Center target pin
-                overlays.push(Overlay {
+                // Center clean bullseye dot
+                points.push(PointMarker {
                     x,
                     y,
-                    radius: 2.2,
+                    radius_sq: 1.25,
                     color: theme.active_target,
                     priority: 4,
                 });
 
-                // Expanding concentric radar ping rings
-                let ping_phase = (app.continuous_time().as_secs_f64() * 1.4).fract();
-                let ping_radius = 1.2 + ping_phase * 4.2;
+                // Clean circular reticle ring
+                rings.push(RingMarker {
+                    x,
+                    y,
+                    radius: 2.8,
+                    color: theme.active_target,
+                    priority: 4,
+                });
+
+                // Subtle expanding radar pulse
+                let ping_phase = (app.continuous_time().as_secs_f64() * 1.3).fract();
+                let ping_radius = 2.8 + ping_phase * 3.5;
                 let ping_fade = (1.0 - ping_phase).max(0.1);
-                rings.push(RingOverlay {
+                rings.push(RingMarker {
                     x,
                     y,
                     radius: ping_radius,
-                    thickness: 0.75,
-                    color: scale_color(theme.active_target, ping_fade * 0.75),
+                    color: scale_color(theme.active_target, ping_fade * 0.70),
                     priority: 3,
                 });
             } else {
-                overlays.push(Overlay {
+                points.push(PointMarker {
                     x,
                     y,
-                    radius: 1.0,
+                    radius_sq: 0.9,
                     color: theme.other_target,
                     priority: 3,
                 });
@@ -667,60 +683,67 @@ fn overlays(
         }
     }
 
-    (overlays, rings)
+    (points, rings, segments)
 }
 
 fn dot_sample(
     x: usize,
     y: usize,
     geometry: &GlobeGeometry,
-    overlays: &[Overlay],
-    rings: &[RingOverlay],
+    points: &[PointMarker],
+    rings: &[RingMarker],
+    segments: &[RouteSegment],
     theme: &ThemePalette,
-    app: &App,
 ) -> Option<DotSample> {
     let screen_x = x as f64 + 0.5;
     let screen_y = y as f64 + 0.5;
 
-    // Check point overlays
-    let overlay_sample = overlays
-        .iter()
-        .filter_map(|overlay| {
-            let distance_squared = (screen_x - overlay.x).powi(2) + (screen_y - overlay.y).powi(2);
-            (distance_squared <= overlay.radius * overlay.radius).then_some(DotSample {
-                color: overlay.color,
-                priority: overlay.priority,
-            })
-        })
-        .max_by_key(|sample| sample.priority);
+    let mut best_overlay: Option<DotSample> = None;
 
-    // Check ring overlays (radar pings)
-    let ring_sample = rings
-        .iter()
-        .filter_map(|ring| {
-            let distance = (screen_x - ring.x).hypot(screen_y - ring.y);
-            ((distance - ring.radius).abs() <= ring.thickness).then_some(DotSample {
-                color: ring.color,
-                priority: ring.priority,
-            })
-        })
-        .max_by_key(|sample| sample.priority);
-
-    let top_overlay = match (overlay_sample, ring_sample) {
-        (Some(o), Some(r)) => {
-            if o.priority >= r.priority {
-                Some(o)
-            } else {
-                Some(r)
+    // Check point markers (center bullseye, photon packet, origin)
+    for p in points {
+        let dist_sq = (screen_x - p.x).powi(2) + (screen_y - p.y).powi(2);
+        if dist_sq <= p.radius_sq {
+            let sample = DotSample {
+                color: p.color,
+                priority: p.priority,
+            };
+            if best_overlay.map_or(true, |b| sample.priority >= b.priority) {
+                best_overlay = Some(sample);
             }
         }
-        (Some(o), None) => Some(o),
-        (None, Some(r)) => Some(r),
-        (None, None) => None,
-    };
+    }
 
-    if let Some(top) = top_overlay
-        && top.priority >= 2
+    // Check circular reticle rings
+    for r in rings {
+        let dist = (screen_x - r.x).hypot(screen_y - r.y);
+        if (dist - r.radius).abs() <= 0.46 {
+            let sample = DotSample {
+                color: r.color,
+                priority: r.priority,
+            };
+            if best_overlay.map_or(true, |b| sample.priority >= b.priority) {
+                best_overlay = Some(sample);
+            }
+        }
+    }
+
+    // Check thin 1-dot hairline route line segments
+    for seg in segments {
+        let d_sq = dist_to_segment_squared(screen_x, screen_y, seg.x1, seg.y1, seg.x2, seg.y2);
+        if d_sq <= 0.26 {
+            let sample = DotSample {
+                color: seg.color,
+                priority: seg.priority,
+            };
+            if best_overlay.map_or(true, |b| sample.priority >= b.priority) {
+                best_overlay = Some(sample);
+            }
+        }
+    }
+
+    if let Some(top) = best_overlay
+        && top.priority >= 3
     {
         return Some(top);
     }
@@ -751,27 +774,26 @@ fn dot_sample(
                 .min(1.0);
 
         let map = map_sample(latitude, longitude);
-        let on_graticule = app.show_graticule() && is_graticule(latitude, longitude);
 
-        // World-space continuous dithering (locked to the rotating planet)
+        // High-accuracy world-space continuous dithering (locked to the rotating planet)
         let stipple = world_stipple(latitude, longitude);
 
+        // Clean dark ocean (no random noise dots in the water)
         let (base_color, density) = if map.boundary {
             (theme.border, 0.98)
         } else if map.coast {
-            (theme.coast, 0.92)
+            (theme.coast, 0.98)
         } else if map.land {
-            (theme.land, 0.72)
-        } else if on_graticule {
-            (theme.graticule, 0.60)
+            (theme.land, 0.85)
         } else {
-            (theme.ocean, 0.38)
+            // Clean ocean
+            (theme.ocean, 0.0)
         };
 
-        if stipple <= density {
+        if density > 0.0 && stipple <= density {
             let color = scale_color(base_color, brightness);
             let sample = DotSample { color, priority: 1 };
-            if let Some(top) = top_overlay
+            if let Some(top) = best_overlay
                 && top.priority >= sample.priority
             {
                 return Some(top);
@@ -779,18 +801,18 @@ fn dot_sample(
             return Some(sample);
         }
 
-        if let Some(top) = top_overlay {
+        if let Some(top) = best_overlay {
             return Some(top);
         }
 
         return None;
     }
 
-    // Atmospheric limb glow (1.0 < sphere_distance <= 1.08)
-    if sphere_distance <= 1.08 {
-        let limb_intensity = (1.08 - sphere_distance) / 0.08;
+    // Atmospheric limb glow (1.0 < sphere_distance <= 1.05)
+    if sphere_distance <= 1.05 {
+        let limb_intensity = (1.05 - sphere_distance) / 0.05;
         let halo_stipple = ((x.wrapping_mul(41) + y.wrapping_mul(19)) % 100) as f64 / 100.0;
-        if halo_stipple < limb_intensity * 0.60 {
+        if halo_stipple < limb_intensity * 0.55 {
             return Some(DotSample {
                 color: scale_color(theme.atmosphere, limb_intensity * 0.85),
                 priority: 1,
@@ -798,44 +820,20 @@ fn dot_sample(
         }
     }
 
-    // Deep space starfield
-    if app.show_stars() && sphere_distance > 1.08 {
-        let star_hash = (x.wrapping_mul(131).wrapping_add(y.wrapping_mul(257))) % 380;
-        if star_hash == 0 {
-            return Some(DotSample {
-                color: theme.stars,
-                priority: 0,
-            });
-        }
-    }
-
-    top_overlay
+    best_overlay
 }
 
-pub fn is_graticule(latitude: f64, longitude: f64) -> bool {
-    let lat_abs = latitude.abs();
-    // Equator
-    if lat_abs < 0.75 {
-        return true;
+fn dist_to_segment_squared(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len_sq = dx * dx + dy * dy;
+    if len_sq < 0.0001 {
+        return (px - x1).powi(2) + (py - y1).powi(2);
     }
-    // Tropics of Cancer / Capricorn (23.44 deg)
-    if (lat_abs - 23.44).abs() < 0.65 {
-        return true;
-    }
-    // Arctic / Antarctic circles (66.5 deg)
-    if (lat_abs - 66.5).abs() < 0.65 {
-        return true;
-    }
-    // 30-degree and 60-degree parallels
-    if (lat_abs - 30.0).abs() < 0.65 || (lat_abs - 60.0).abs() < 0.65 {
-        return true;
-    }
-    // 30-degree meridians
-    let lon_mod = (longitude + 180.0).rem_euclid(30.0);
-    if !(0.75..=29.25).contains(&lon_mod) {
-        return true;
-    }
-    false
+    let t = (((px - x1) * dx + (py - y1) * dy) / len_sq).clamp(0.0, 1.0);
+    let proj_x = x1 + t * dx;
+    let proj_y = y1 + t * dy;
+    (px - proj_x).powi(2) + (py - proj_y).powi(2)
 }
 
 pub fn world_stipple(latitude: f64, longitude: f64) -> f64 {
@@ -845,7 +843,6 @@ pub fn world_stipple(latitude: f64, longitude: f64) -> f64 {
 }
 
 type LandGeometry = Vec<Vec<Vec<(f64, f64)>>>;
-type BoundaryGeometry = Vec<Vec<(f64, f64)>>;
 
 struct LandShape {
     rings: Vec<Vec<(f64, f64)>>,
@@ -872,17 +869,6 @@ pub fn geo_to_vec(latitude: f64, longitude: f64) -> DVec3 {
     let lat = latitude.to_radians();
     let lon = longitude.to_radians();
     DVec3::new(lat.cos() * lon.cos(), lat.sin(), lat.cos() * lon.sin())
-}
-
-pub fn project_vec(
-    point: DVec3,
-    rotation: f64,
-    center_x: f64,
-    center_y: f64,
-    radius_x: f64,
-    radius_y: f64,
-) -> Option<(f64, f64, f64)> {
-    project_vec_camera(point, rotation, 0.0, center_x, center_y, radius_x, radius_y)
 }
 
 fn project_vec_camera(
@@ -965,7 +951,7 @@ fn land_shapes() -> &'static [LandShape] {
 }
 
 fn boundary_geometry() -> &'static [Vec<(f64, f64)>] {
-    static GEOMETRY: OnceLock<BoundaryGeometry> = OnceLock::new();
+    static GEOMETRY: OnceLock<Vec<Vec<(f64, f64)>>> = OnceLock::new();
     GEOMETRY
         .get_or_init(|| {
             serde_json::from_str(include_str!("../data/ne_110m_boundaries.json"))
@@ -1148,16 +1134,6 @@ mod tests {
     }
 
     #[test]
-    fn projection_rotates_longitude_and_preserves_front_points() {
-        let point = geo_to_vec(0.0, 0.0);
-        let projected = project_vec(point, std::f64::consts::PI / 2.0, 10.0, 10.0, 5.0, 5.0)
-            .expect("front point");
-        assert!((projected.0 - 10.0).abs() < 0.001);
-        assert!((projected.1 - 10.0).abs() < 0.001);
-        assert!((projected.2 - 1.0).abs() < 0.001);
-    }
-
-    #[test]
     fn target_focus_heading_places_city_marker_on_visible_hemisphere() {
         let topology =
             crate::model::Topology::from_json(include_str!("../data/demo-topology.json"))
@@ -1177,14 +1153,6 @@ mod tests {
         assert!((projected.0 - 10.0).abs() < 0.001);
         assert!((projected.1 - 10.0).abs() < 0.001);
         assert!(projected.2 > 0.99);
-    }
-
-    #[test]
-    fn land_mask_separates_europe_from_mid_atlantic() {
-        assert!(land_mask(52.37, 4.90));
-        assert!(!land_mask(0.0, -30.0));
-        assert!(land_mask(39.04, -77.49));
-        assert!(land_mask(35.68, 139.65));
     }
 
     #[test]
@@ -1213,13 +1181,11 @@ mod tests {
     }
 
     #[test]
-    fn graticule_detects_equator_and_meridians() {
-        assert!(is_graticule(0.0, 15.0)); // Equator
-        assert!(is_graticule(23.44, 15.0)); // Tropic of Cancer
-        assert!(is_graticule(-23.44, 15.0)); // Tropic of Capricorn
-        assert!(is_graticule(45.0, 0.0)); // Prime Meridian
-        assert!(is_graticule(45.0, 30.0)); // 30 deg Meridian
-        assert!(!is_graticule(14.2, 17.3)); // Generic open ocean
+    fn land_mask_separates_europe_from_mid_atlantic() {
+        assert!(land_mask(52.37, 4.90));
+        assert!(!land_mask(0.0, -30.0));
+        assert!(land_mask(39.04, -77.49));
+        assert!(land_mask(35.68, 139.65));
     }
 
     #[test]

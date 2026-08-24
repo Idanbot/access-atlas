@@ -31,10 +31,8 @@ docker run --rm access-atlas:dev --validate
 
 | Key | Action |
 | --- | --- |
-| `Space` | Pause / resume automatic target cycling |
-| `t` | Cycle color theme (Cyber Orbital, Tactical Radar, Minimal Atlas, Amber CRT, Deep Space) |
-| `g` | Toggle cartographic graticule grid lines (Equator, Tropics, Meridians) |
-| `s` | Toggle deep-space starfield |
+| `Space` | Pause / resume automatic target cycling (paused by default) |
+| `t` | Cycle color theme (Tactical Radar, Minimal Atlas, Cyber Orbital, Amber CRT, Deep Space) |
 | `+` / `-` | Zoom camera in / out |
 | `h` / `j` / `k` / `l` | Manual pan / orbit camera in longitude and latitude |
 | `r` | Reset camera to focused target |
@@ -45,7 +43,7 @@ docker run --rm access-atlas:dev --validate
 | `Enter` | Reserved; currently does nothing |
 | `q` | Exit |
 
-Targets advance automatically unless paused with `Space`. The route is animated along an elevated 3D parabolic great-circle arc with a traveling photon packet and fading tail from the local workstation origin to the active target. The active target features expanding concentric radar pings, and the globe displays an atmospheric Rayleigh limb glow, world-space locked dithering, and live orbital telemetry badges.
+Auto-cycle is paused by default for focused inspection (press `Space` to run). The route is animated along a subtle, thin 1-dot 3D parabolic great-circle arc with a traveling photon packet and fading tail from the local workstation origin to the active target. The active target features a clean circular reticle and expanding concentric radar beacon. The globe displays high-accuracy continent masks (0.5° sampling), clean dark oceans, atmospheric Rayleigh limb glow, world-space locked dithering, and live orbital telemetry badges.
 
 The data hierarchy is:
 

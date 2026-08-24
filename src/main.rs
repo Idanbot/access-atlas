@@ -64,13 +64,14 @@ fn main() -> Result<()> {
     }
 
     let theme = match args.theme.as_deref() {
+        Some("cyber-orbital") | Some("cyber") | Some("orbital") => ThemeId::CyberOrbital,
         Some("tactical-radar") | Some("radar") | Some("tactical") => ThemeId::TacticalRadar,
         Some("minimal-atlas") | Some("atlas") | Some("minimal") | Some("slate") => {
             ThemeId::MinimalAtlas
         }
         Some("amber-crt") | Some("amber") | Some("crt") => ThemeId::AmberCrt,
         Some("deep-space") | Some("space") | Some("nebula") => ThemeId::DeepSpace,
-        _ => ThemeId::CyberOrbital,
+        _ => ThemeId::default(),
     };
 
     run_tui(App::with_theme(topology, theme))

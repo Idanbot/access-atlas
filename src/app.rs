@@ -7,8 +7,8 @@ use std::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeId {
-    #[default]
     CyberOrbital,
+    #[default]
     TacticalRadar,
     MinimalAtlas,
     AmberCrt,
@@ -54,15 +54,13 @@ pub struct App {
     focus_zoom: f64,
     paused: bool,
     theme: ThemeId,
-    show_graticule: bool,
-    show_stars: bool,
     dirty: bool,
     quit: bool,
 }
 
 impl App {
     pub fn new(topology: Topology) -> Self {
-        Self::with_theme(topology, ThemeId::CyberOrbital)
+        Self::with_theme(topology, ThemeId::TacticalRadar)
     }
 
     pub fn with_theme(topology: Topology, theme: ThemeId) -> Self {
@@ -84,10 +82,8 @@ impl App {
             focus_pitch,
             zoom: focus_zoom,
             focus_zoom,
-            paused: false,
+            paused: true,
             theme,
-            show_graticule: true,
-            show_stars: true,
             dirty: true,
             quit: false,
         }
@@ -204,14 +200,6 @@ impl App {
         self.theme
     }
 
-    pub fn show_graticule(&self) -> bool {
-        self.show_graticule
-    }
-
-    pub fn show_stars(&self) -> bool {
-        self.show_stars
-    }
-
     pub fn camera_azimuth_deg(&self) -> f64 {
         (PI / 2.0 - self.rotation).to_degrees().rem_euclid(360.0)
     }
@@ -267,8 +255,6 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char(' ') => self.toggle_pause(),
             KeyCode::Char('t') => self.cycle_theme(),
-            KeyCode::Char('g') => self.toggle_graticule(),
-            KeyCode::Char('s') => self.toggle_stars(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_in(),
             KeyCode::Char('-') | KeyCode::Char('_') => self.zoom_out(),
             KeyCode::Char('h') | KeyCode::Char('a') => self.manual_pan(-0.1, 0.0),
@@ -305,23 +291,13 @@ impl App {
         self.dirty = true;
     }
 
-    pub fn toggle_graticule(&mut self) {
-        self.show_graticule = !self.show_graticule;
-        self.dirty = true;
-    }
-
-    pub fn toggle_stars(&mut self) {
-        self.show_stars = !self.show_stars;
-        self.dirty = true;
-    }
-
     pub fn zoom_in(&mut self) {
-        self.focus_zoom = (self.focus_zoom * 1.15).min(3.0);
+        self.focus_zoom = (self.focus_zoom * 1.18).min(3.5);
         self.dirty = true;
     }
 
     pub fn zoom_out(&mut self) {
-        self.focus_zoom = (self.focus_zoom / 1.15).max(0.6);
+        self.focus_zoom = (self.focus_zoom / 1.18).max(0.6);
         self.dirty = true;
     }
 
@@ -423,9 +399,9 @@ fn target_focus_pitch(target: &Target) -> f64 {
 
 fn target_focus_zoom(target: &Target) -> f64 {
     match target.location.precision.as_str() {
-        "city" => 1.25,
-        "country" => 1.15,
-        "region" => 1.08,
+        "city" => 1.30,
+        "country" => 1.18,
+        "region" => 1.10,
         _ => 1.0,
     }
 }
@@ -492,7 +468,7 @@ mod tests {
         assert_eq!(app.target().id, "gcp-us-micro");
         assert!((app.focus_pitch() - 39.04_f64.to_radians()).abs() < 0.001);
         assert!((app.focus_pitch() - initial_pitch).abs() > 0.1);
-        assert!((app.focus_zoom() - 1.25).abs() < f64::EPSILON);
+        assert!((app.focus_zoom() - 1.30).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -547,6 +523,7 @@ mod tests {
     #[test]
     fn animation_completes_route_and_locks_target_heading() {
         let mut app = app();
+        app.toggle_pause(); // Unpause for auto animation test
         let initial_focus = app.focus_rotation();
         let initial_zoom = app.focus_zoom();
         app.tick(Duration::from_secs(3));
@@ -563,6 +540,7 @@ mod tests {
     #[test]
     fn steady_state_stops_animation_and_redraws_only_after_changes() {
         let mut app = app();
+        app.toggle_pause(); // Unpause for animation test
         assert!(app.needs_render());
         assert!(app.is_animating());
 
@@ -583,15 +561,12 @@ mod tests {
     #[test]
     fn theme_and_interactive_controls_work() {
         let mut app = app();
-        assert_eq!(app.theme(), ThemeId::CyberOrbital);
-        app.handle_key(key(KeyCode::Char('t'), KeyModifiers::NONE));
         assert_eq!(app.theme(), ThemeId::TacticalRadar);
+        app.handle_key(key(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.theme(), ThemeId::MinimalAtlas);
+        assert!(app.is_paused()); // Default is paused
         app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
-        assert!(app.is_paused());
-        app.handle_key(key(KeyCode::Char('g'), KeyModifiers::NONE));
-        assert!(!app.show_graticule());
-        app.handle_key(key(KeyCode::Char('s'), KeyModifiers::NONE));
-        assert!(!app.show_stars());
+        assert!(!app.is_paused()); // Unpaused
         let initial_zoom = app.focus_zoom();
         app.handle_key(key(KeyCode::Char('+'), KeyModifiers::NONE));
         assert!(app.focus_zoom() > initial_zoom);

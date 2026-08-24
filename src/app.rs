@@ -37,6 +37,18 @@ impl ThemeId {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct CameraTransition {
+    pub start_rotation: f64,
+    pub target_rotation: f64,
+    pub start_pitch: f64,
+    pub target_pitch: f64,
+    pub start_zoom: f64,
+    pub target_zoom: f64,
+    pub elapsed: Duration,
+    pub duration: Duration,
+}
+
 pub struct App {
     topology: Topology,
     target_index: usize,
@@ -52,6 +64,7 @@ pub struct App {
     focus_pitch: f64,
     zoom: f64,
     focus_zoom: f64,
+    transition: Option<CameraTransition>,
     paused: bool,
     theme: ThemeId,
     dirty: bool,
@@ -82,6 +95,7 @@ impl App {
             focus_pitch,
             zoom: focus_zoom,
             focus_zoom,
+            transition: None,
             paused: true,
             theme,
             dirty: true,
@@ -222,6 +236,7 @@ impl App {
 
     pub fn is_animating(&self) -> bool {
         self.route_progress < 1.0
+            || self.transition.is_some()
             || shortest_angle(self.focus_rotation - self.rotation).abs() > 0.001
             || (self.focus_pitch - self.pitch).abs() > 0.001
             || (self.focus_zoom - self.zoom).abs() > 0.001
@@ -232,18 +247,50 @@ impl App {
         self.continuous_time += delta;
         if !self.paused {
             self.elapsed += delta;
-            self.route_progress = (self.elapsed.as_secs_f32() / 2.5).min(1.0);
+            self.route_progress = (self.elapsed.as_secs_f32() / 2.0).min(1.0);
             if self.elapsed >= Duration::from_secs(6) {
                 self.next_target();
             }
         }
-        self.rotation = approach_angle(
-            self.rotation,
-            self.focus_rotation,
-            delta.as_secs_f64() * 2.4,
-        );
-        self.pitch = approach_angle(self.pitch, self.focus_pitch, delta.as_secs_f64() * 2.4);
-        self.zoom = approach_value(self.zoom, self.focus_zoom, delta.as_secs_f64() * 0.8);
+
+        if let Some(mut trans) = self.transition {
+            trans.elapsed += delta;
+            let t = (trans.elapsed.as_secs_f64() / trans.duration.as_secs_f64()).clamp(0.0, 1.0);
+
+            // Smooth cosine S-curve over 2 seconds
+            let s = 0.5 * (1.0 - (t * PI).cos());
+
+            // 1. Rotation and Pitch smoothly sweep towards target over 2s
+            let rot_delta = shortest_angle(trans.target_rotation - trans.start_rotation);
+            self.rotation = trans.start_rotation + rot_delta * s;
+
+            let pitch_delta = trans.target_pitch - trans.start_pitch;
+            self.pitch = trans.start_pitch + pitch_delta * s;
+
+            // 2. Zoom: pull back (zoom out) during 1st second (t in [0.0, 0.5]),
+            // then zoom back in to target zoom during 2nd second (t in [0.5, 1.0])
+            let base_zoom = trans.start_zoom + (trans.target_zoom - trans.start_zoom) * s;
+            let zoom_dip = 0.35 * (t * PI).sin();
+            self.zoom = (base_zoom - zoom_dip).max(0.65);
+
+            if t >= 1.0 {
+                self.rotation = trans.target_rotation;
+                self.pitch = trans.target_pitch;
+                self.zoom = trans.target_zoom;
+                self.transition = None;
+            } else {
+                self.transition = Some(trans);
+            }
+            self.dirty = true;
+        } else {
+            self.rotation = approach_angle(
+                self.rotation,
+                self.focus_rotation,
+                delta.as_secs_f64() * 2.4,
+            );
+            self.pitch = approach_angle(self.pitch, self.focus_pitch, delta.as_secs_f64() * 2.4);
+            self.zoom = approach_value(self.zoom, self.focus_zoom, delta.as_secs_f64() * 0.8);
+        }
 
         if was_animating || self.is_animating() {
             self.dirty = true;
@@ -302,6 +349,7 @@ impl App {
     }
 
     pub fn manual_pan(&mut self, delta_rot: f64, delta_pitch: f64) {
+        self.transition = None;
         self.focus_rotation = (self.focus_rotation + delta_rot).rem_euclid(TAU);
         self.focus_pitch =
             (self.focus_pitch + delta_pitch).clamp(-PI / 2.0 + 0.05, PI / 2.0 - 0.05);
@@ -383,9 +431,24 @@ impl App {
     }
 
     fn update_camera_focus(&mut self) {
-        self.focus_rotation = target_focus_rotation(self.target());
-        self.focus_pitch = target_focus_pitch(self.target());
-        self.focus_zoom = target_focus_zoom(self.target());
+        let target_rotation = target_focus_rotation(self.target());
+        let target_pitch = target_focus_pitch(self.target());
+        let target_zoom = target_focus_zoom(self.target());
+
+        self.focus_rotation = target_rotation;
+        self.focus_pitch = target_pitch;
+        self.focus_zoom = target_zoom;
+
+        self.transition = Some(CameraTransition {
+            start_rotation: self.rotation,
+            target_rotation,
+            start_pitch: self.pitch,
+            target_pitch,
+            start_zoom: self.zoom,
+            target_zoom,
+            elapsed: Duration::ZERO,
+            duration: Duration::from_secs(2),
+        });
     }
 }
 
@@ -570,6 +633,24 @@ mod tests {
         app.next_target();
         assert!(app.needs_render());
         assert!(app.is_animating());
+    }
+
+    #[test]
+    fn camera_transition_zooms_out_at_1s_and_zooms_in_at_2s() {
+        let mut app = app();
+        app.next_target();
+        let target_zoom = app.focus_zoom();
+
+        // At 1.0s (midpoint of 2s transition), zoom is pulled out for wide overview
+        app.tick(Duration::from_secs(1));
+        assert!(app.is_animating());
+        assert!(app.zoom() < target_zoom - 0.20);
+
+        // At 2.0s, zoom has zoomed back in to target_zoom and camera is centered
+        app.tick(Duration::from_secs(1));
+        assert!((app.zoom() - target_zoom).abs() < 0.001);
+        assert!(shortest_angle(app.rotation() - app.focus_rotation()).abs() < 0.001);
+        assert!((app.pitch() - app.focus_pitch()).abs() < 0.001);
     }
 
     #[test]

@@ -151,6 +151,25 @@ pub fn render(frame: &mut Frame, app: &App) {
     let target = app.target();
     let network_type = app.current_network_type();
     let option = app.current_access_option();
+
+    let platform = target.provider.to_uppercase();
+    let account = target
+        .metadata
+        .get("project_id")
+        .or_else(|| target.metadata.get("account"))
+        .or_else(|| target.metadata.get("cluster_name"))
+        .or_else(|| target.metadata.get("tailnet"))
+        .map(|s| s.as_str())
+        .unwrap_or(&target.location.region);
+    let vm_or_cluster = target
+        .metadata
+        .get("instance_id")
+        .or_else(|| target.metadata.get("machine_type"))
+        .or_else(|| target.metadata.get("node_id"))
+        .or_else(|| target.metadata.get("bastion_id"))
+        .map(|s| s.as_str())
+        .unwrap_or(&target.id);
+
     let target_title = format!(
         " {} | {}, {} | target {}/{} | {} ",
         target.label,
@@ -203,6 +222,36 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let details = app.detail_rows();
     let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "TARGET: ",
+                Style::default()
+                    .fg(to_color(theme.hud_accent))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                &target.label,
+                Style::default()
+                    .fg(to_color(theme.active_target))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("Platform: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(&platform, Style::default().fg(Color::Gray)),
+            Span::styled("  Account: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(account, Style::default().fg(Color::Gray)),
+        ]),
+        Line::from(vec![
+            Span::styled("Target: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(vm_or_cluster, Style::default().fg(Color::Gray)),
+            Span::styled("  Country: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{} ({})", target.location.country, target.location.city),
+                Style::default().fg(Color::Gray),
+            ),
+        ]),
+        Line::from(""),
         Line::from(vec![
             Span::styled("network: ", Style::default().fg(Color::Gray)),
             Span::styled(
@@ -421,26 +470,61 @@ fn render_city_label(
         return;
     };
 
-    let label = format!(" ◉ {} ", target.location.city);
-    let label_width = label.chars().count() as i32;
-    let start_x = (x / 2.0).round() as i32 + 2;
+    let platform = target.provider.to_uppercase();
+    let account = target
+        .metadata
+        .get("project_id")
+        .or_else(|| target.metadata.get("account"))
+        .or_else(|| target.metadata.get("cluster_name"))
+        .or_else(|| target.metadata.get("tailnet"))
+        .map(|s| s.as_str())
+        .unwrap_or(&target.location.region);
+    let vm_or_cluster = target
+        .metadata
+        .get("instance_id")
+        .or_else(|| target.metadata.get("machine_type"))
+        .or_else(|| target.metadata.get("node_id"))
+        .or_else(|| target.metadata.get("bastion_id"))
+        .map(|s| s.as_str())
+        .unwrap_or(&target.id);
+    let country = &target.location.country;
+
+    let label_title = format!(" ◉ {} ", target.label);
+    let label_meta = format!(
+        "   {} · {} · {} · {} ",
+        platform, account, vm_or_cluster, country
+    );
+
+    let max_len = label_title.chars().count().max(label_meta.chars().count()) as i32;
+    let start_x = (x / 2.0).round() as i32 + 3;
     let start_y = (y / 4.0).round() as i32;
     let min_x = i32::from(area.x);
-    let max_x = i32::from(area.x + area.width).saturating_sub(label_width);
+    let max_x = i32::from(area.x + area.width).saturating_sub(max_len);
     let draw_x = start_x.clamp(min_x, max_x.max(min_x));
     let draw_y = start_y.clamp(
         i32::from(area.y),
-        i32::from(area.bottom().saturating_sub(1)),
+        i32::from(area.bottom().saturating_sub(2)),
     );
+
     buf.set_string(
         draw_x as u16,
         draw_y as u16,
-        label,
+        label_title,
         Style::default()
             .fg(to_color(theme.active_target))
             .bg(to_color(theme.background))
             .add_modifier(Modifier::BOLD),
     );
+    if (draw_y + 1) < area.bottom() as i32 {
+        buf.set_string(
+            draw_x as u16,
+            (draw_y + 1) as u16,
+            label_meta,
+            Style::default()
+                .fg(to_color(theme.hud_text))
+                .bg(to_color(theme.background)),
+        );
+    }
 }
 
 fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
@@ -485,18 +569,56 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
         );
     }
 
-    // Bottom-Left Target Lock Badge
+    // Bottom-Left Target Lock Information Box
     let target = app.target();
-    let bot_left = format!(
-        " ⌖ LOCK: {} [{}] ",
-        target.location.city,
-        target.provider.to_uppercase()
+    let platform = target.provider.to_uppercase();
+    let account = target
+        .metadata
+        .get("project_id")
+        .or_else(|| target.metadata.get("account"))
+        .or_else(|| target.metadata.get("cluster_name"))
+        .or_else(|| target.metadata.get("tailnet"))
+        .map(|s| s.as_str())
+        .unwrap_or(&target.location.region);
+    let vm_or_cluster = target
+        .metadata
+        .get("instance_id")
+        .or_else(|| target.metadata.get("machine_type"))
+        .or_else(|| target.metadata.get("node_id"))
+        .or_else(|| target.metadata.get("bastion_id"))
+        .map(|s| s.as_str())
+        .unwrap_or(&target.id);
+    let country = &target.location.country;
+
+    let bot_left_title = format!(" ⌖ LOCK: {} ", target.label);
+    let bot_left_meta = format!(
+        "   Platform: {} · Account: {} · Target: {} · Country: {} ({}) ",
+        platform, account, vm_or_cluster, country, target.location.city
     );
-    if area.height > 2 {
+
+    if area.height > 3 {
+        buf.set_string(
+            area.x + 1,
+            area.bottom().saturating_sub(3),
+            bot_left_title,
+            Style::default()
+                .fg(to_color(theme.active_target))
+                .bg(to_color(theme.background))
+                .add_modifier(Modifier::BOLD),
+        );
         buf.set_string(
             area.x + 1,
             area.bottom().saturating_sub(2),
-            bot_left,
+            bot_left_meta,
+            Style::default()
+                .fg(to_color(theme.hud_text))
+                .bg(to_color(theme.background)),
+        );
+    } else if area.height > 2 {
+        buf.set_string(
+            area.x + 1,
+            area.bottom().saturating_sub(2),
+            bot_left_title,
             Style::default()
                 .fg(to_color(theme.active_target))
                 .bg(to_color(theme.background))
@@ -540,7 +662,6 @@ fn build_overlays(
         app.topology().origin.location.latitude,
         app.topology().origin.location.longitude,
     );
-    let destination = geo_to_vec(target.location.latitude, target.location.longitude);
 
     // 1. Workstation Origin Marker (Clean compact beacon)
     if let Some((ox, oy, _depth)) = project_vec_camera(
@@ -569,13 +690,14 @@ fn build_overlays(
         let packet_phase = (app.continuous_time().as_secs_f64() * 0.85).fract();
         let packet_step = (packet_phase * visible_steps.min(steps) as f64).round() as usize;
 
+        let destination = geo_to_vec(target.location.latitude, target.location.longitude);
         let mut prev_pt: Option<(f64, f64)> = None;
 
         for step in 0..=visible_steps.min(steps) {
             let amount = step as f64 / steps as f64;
-            // 3D Parabolic sub-orbital lift (12% altitude apex)
-            let altitude = 1.0 + (amount * std::f64::consts::PI).sin() * 0.12;
-            let elevated_point = interpolate_arc(origin, destination, amount) * altitude;
+            let sphere_point = interpolate_arc(origin, destination, amount);
+            let altitude = (amount * std::f64::consts::PI).sin() * 0.16;
+            let elevated_point = sphere_point * (1.0 + altitude);
 
             if let Some((x, y, _depth)) = project_vec_camera(
                 elevated_point,
@@ -783,22 +905,16 @@ fn dot_sample(
 
         let map = map_sample(latitude, longitude);
 
-        // High-accuracy world-space continuous dithering (locked to the rotating planet)
-        let stipple = world_stipple(latitude, longitude);
+        // Solid continent landmasses, glowing coastlines, and crisp country borders
+        if map.land || map.coast || map.boundary {
+            let base_color = if map.boundary {
+                theme.border
+            } else if map.coast {
+                theme.coast
+            } else {
+                theme.land
+            };
 
-        // Clean dark ocean (no random noise dots in the water)
-        let (base_color, density) = if map.boundary {
-            (theme.border, 1.0)
-        } else if map.coast {
-            (theme.coast, 1.0)
-        } else if map.land {
-            (theme.land, 0.90)
-        } else {
-            // Clean ocean
-            (theme.ocean, 0.0)
-        };
-
-        if density > 0.0 && stipple <= density {
             let color = scale_color(base_color, brightness);
             let sample = DotSample { color, priority: 1 };
             if let Some(top) = best_overlay

@@ -832,7 +832,7 @@ pub fn is_graticule(latitude: f64, longitude: f64) -> bool {
     }
     // 30-degree meridians
     let lon_mod = (longitude + 180.0).rem_euclid(30.0);
-    if lon_mod < 0.75 || lon_mod > 29.25 {
+    if !(0.75..=29.25).contains(&lon_mod) {
         return true;
     }
     false

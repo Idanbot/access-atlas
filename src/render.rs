@@ -770,51 +770,38 @@ fn build_overlays(
         ) {
             let active = index == app.target_index();
             if active {
-                // Center clean bullseye dot
+                // Subtle central target beacon dot
                 points.push(PointMarker {
                     x,
                     y,
-                    radius_sq: 1.25,
+                    radius_sq: 1.0,
                     color: theme.active_target,
                     priority: 4,
                 });
 
-                // Clean circular reticle ring
-                rings.push(RingMarker {
-                    x,
-                    y,
-                    radius: 2.8,
-                    color: theme.active_target,
-                    priority: 4,
-                });
-
-                // Cardinal North indicator pip
-                points.push(PointMarker {
-                    x,
-                    y: y - 3.8,
-                    radius_sq: 0.65,
-                    color: theme.active_target,
-                    priority: 4,
-                });
-
-                // Subtle expanding radar pulse
-                let ping_phase = (app.continuous_time().as_secs_f64() * 1.3).fract();
-                let ping_radius = 2.8 + ping_phase * 3.5;
-                let ping_fade = (1.0 - ping_phase).max(0.1);
-                rings.push(RingMarker {
-                    x,
-                    y,
-                    radius: ping_radius,
-                    color: scale_color(theme.active_target, ping_fade * 0.70),
-                    priority: 3,
-                });
+                // Subtle phased concentric sonar rings that expand and smoothly disappear
+                let t = app.continuous_time().as_secs_f64();
+                for offset in [0.0, 0.5] {
+                    let phase = ((t * 0.70) + offset).fract();
+                    let radius = 1.2 + phase * 3.6;
+                    let fade = (1.0 - phase).powf(1.8) * 0.85;
+                    if fade > 0.04 {
+                        rings.push(RingMarker {
+                            x,
+                            y,
+                            radius,
+                            color: scale_color(theme.active_target, fade),
+                            priority: 3,
+                        });
+                    }
+                }
             } else {
                 points.push(PointMarker {
                     x,
                     y,
-                    radius_sq: 0.9,
+                    radius_sq: 0.8,
                     color: theme.other_target,
-                    priority: 3,
+                    priority: 2,
                 });
             }
         }
@@ -1190,6 +1177,39 @@ mod tests {
         let s2 = world_stipple(52.37, 4.90);
         assert_eq!(s1, s2);
         assert!((0.0..=1.0).contains(&s1));
+    }
+
+    #[test]
+    fn active_target_generates_subtle_pulsing_rings() {
+        let topology =
+            crate::model::Topology::from_json(include_str!("../data/demo-topology.json"))
+                .expect("fixture should parse");
+        let app = App::new(topology);
+        let theme = get_theme(ThemeId::CyberOrbital);
+        let geometry = GlobeGeometry {
+            center_x: 50.0,
+            center_y: 25.0,
+            radius_x: 20.0,
+            radius_y: 20.0,
+            rotation: app.rotation(),
+            rotation_cos: app.rotation().cos(),
+            rotation_sin: app.rotation().sin(),
+            pitch: app.pitch(),
+            pitch_cos: app.pitch().cos(),
+            pitch_sin: app.pitch().sin(),
+        };
+
+        let (_points, rings, _segments) = build_overlays(&app, &geometry, &theme);
+        assert!(
+            !rings.is_empty(),
+            "Active target should have subtle pulsing rings"
+        );
+        for r in &rings {
+            assert!(
+                r.radius >= 1.2 && r.radius <= 5.0,
+                "Ring radius within subtle bounds"
+            );
+        }
     }
 
     #[test]

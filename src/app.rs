@@ -297,6 +297,10 @@ impl App {
         }
     }
 
+    pub fn is_transitioning(&self) -> bool {
+        self.transition.is_some()
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
@@ -307,7 +311,7 @@ impl App {
             KeyCode::Char('h') | KeyCode::Char('a') => self.manual_pan(-0.1, 0.0),
             KeyCode::Char('l') | KeyCode::Char('d') => self.manual_pan(0.1, 0.0),
             KeyCode::Char('k') | KeyCode::Char('w') => self.manual_pan(0.0, 0.08),
-            KeyCode::Char('j') => self.manual_pan(0.0, -0.08),
+            KeyCode::Char('j') | KeyCode::Char('s') => self.manual_pan(0.0, -0.08),
             KeyCode::Char('r') => self.reset_camera(),
             KeyCode::Left => self.previous_target(),
             KeyCode::Right => self.next_target(),
@@ -339,21 +343,27 @@ impl App {
     }
 
     pub fn zoom_in(&mut self) {
-        self.transition = None;
+        if self.is_transitioning() {
+            return;
+        }
         self.focus_zoom = (self.focus_zoom * 1.18).min(3.5);
         self.zoom = self.focus_zoom;
         self.dirty = true;
     }
 
     pub fn zoom_out(&mut self) {
-        self.transition = None;
+        if self.is_transitioning() {
+            return;
+        }
         self.focus_zoom = (self.focus_zoom / 1.18).max(0.6);
         self.zoom = self.focus_zoom;
         self.dirty = true;
     }
 
     pub fn manual_pan(&mut self, delta_rot: f64, delta_pitch: f64) {
-        self.transition = None;
+        if self.is_transitioning() {
+            return;
+        }
         self.focus_rotation = (self.focus_rotation + delta_rot).rem_euclid(TAU);
         self.focus_pitch =
             (self.focus_pitch + delta_pitch).clamp(-PI / 2.0 + 0.05, PI / 2.0 - 0.05);
@@ -361,6 +371,9 @@ impl App {
     }
 
     pub fn reset_camera(&mut self) {
+        if self.is_transitioning() {
+            return;
+        }
         self.update_camera_focus();
         self.dirty = true;
     }
@@ -684,6 +697,35 @@ mod tests {
         app.tick(Duration::from_millis(100));
         app.tick(Duration::from_millis(800));
         assert_eq!(app.zoom(), zoomed_out);
+    }
+
+    #[test]
+    fn manual_pan_and_zoom_are_ignored_during_active_transition() {
+        let mut app = app();
+        app.next_target();
+        assert!(app.is_transitioning());
+
+        let transition_rot = app.rotation();
+        let transition_zoom = app.zoom();
+
+        // Attempt manual pan and zoom during active transition
+        app.handle_key(key(KeyCode::Char('+'), KeyModifiers::NONE));
+        app.handle_key(key(KeyCode::Char('h'), KeyModifiers::NONE));
+        app.handle_key(key(KeyCode::Char('k'), KeyModifiers::NONE));
+
+        // Must remain unchanged during transition
+        assert_eq!(app.zoom(), transition_zoom);
+        assert_eq!(app.rotation(), transition_rot);
+        assert!(app.is_transitioning());
+
+        // Complete the 2s camera swoop transition
+        app.tick(Duration::from_secs(2));
+        assert!(!app.is_transitioning());
+
+        // After transition ends, manual zoom and pan take effect immediately
+        let completed_zoom = app.zoom();
+        app.handle_key(key(KeyCode::Char('+'), KeyModifiers::NONE));
+        assert!(app.zoom() > completed_zoom);
     }
 
     #[test]

@@ -708,7 +708,7 @@ fn dot_sample(
                 color: p.color,
                 priority: p.priority,
             };
-            if best_overlay.map_or(true, |b| sample.priority >= b.priority) {
+            if best_overlay.is_none_or(|b| sample.priority >= b.priority) {
                 best_overlay = Some(sample);
             }
         }
@@ -722,7 +722,7 @@ fn dot_sample(
                 color: r.color,
                 priority: r.priority,
             };
-            if best_overlay.map_or(true, |b| sample.priority >= b.priority) {
+            if best_overlay.is_none_or(|b| sample.priority >= b.priority) {
                 best_overlay = Some(sample);
             }
         }
@@ -736,7 +736,7 @@ fn dot_sample(
                 color: seg.color,
                 priority: seg.priority,
             };
-            if best_overlay.map_or(true, |b| sample.priority >= b.priority) {
+            if best_overlay.is_none_or(|b| sample.priority >= b.priority) {
                 best_overlay = Some(sample);
             }
         }

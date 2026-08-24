@@ -8,7 +8,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph, Widget, Wrap},
 };
-use std::sync::OnceLock;
 
 const MASK_WIDTH: usize = 1440;
 const MASK_HEIGHT: usize = 720;
@@ -845,27 +844,14 @@ pub fn world_stipple(latitude: f64, longitude: f64) -> f64 {
     ((lat_term * 43758.5453 + lon_term * 24634.63) % 1.0).abs()
 }
 
-type LandGeometry = Vec<Vec<Vec<(f64, f64)>>>;
-
-struct LandShape {
-    rings: Vec<Vec<(f64, f64)>>,
-    min_latitude: f64,
-    max_latitude: f64,
-    min_longitude: f64,
-    max_longitude: f64,
-}
+const BITMAP_SIZE: usize = (MASK_WIDTH * MASK_HEIGHT) / 8;
+static MASKS_BIN: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/ne_50m_masks.bin"));
 
 #[derive(Clone, Copy)]
 struct MapSample {
     land: bool,
     coast: bool,
     boundary: bool,
-}
-
-struct GlobeMasks {
-    land: Vec<u8>,
-    coast: Vec<u8>,
-    boundary: Vec<u8>,
 }
 
 pub fn geo_to_vec(latitude: f64, longitude: f64) -> DVec3 {
@@ -903,186 +889,19 @@ pub fn land_mask(latitude: f64, longitude: f64) -> bool {
 }
 
 fn map_sample(latitude: f64, longitude: f64) -> MapSample {
-    let masks = globe_masks();
     let index = mask_index(latitude, longitude);
+    let byte_offset = index / 8;
+    let bit_mask = 1 << (index % 8);
+
+    let land = (MASKS_BIN[byte_offset] & bit_mask) != 0;
+    let coast = (MASKS_BIN[BITMAP_SIZE + byte_offset] & bit_mask) != 0;
+    let boundary = (MASKS_BIN[BITMAP_SIZE * 2 + byte_offset] & bit_mask) != 0;
+
     MapSample {
-        land: masks.land[index] != 0,
-        coast: masks.coast[index] != 0,
-        boundary: masks.boundary[index] != 0,
-    }
-}
-
-fn globe_masks() -> &'static GlobeMasks {
-    static MASKS: OnceLock<GlobeMasks> = OnceLock::new();
-    MASKS.get_or_init(build_globe_masks)
-}
-
-struct SpatialGrid {
-    shapes: Vec<LandShape>,
-    cells: Vec<Vec<usize>>,
-}
-
-fn spatial_grid() -> &'static SpatialGrid {
-    static GRID: OnceLock<SpatialGrid> = OnceLock::new();
-    GRID.get_or_init(|| {
-        let geometry: LandGeometry = serde_json::from_str(include_str!("../data/ne_50m_land.json"))
-            .expect("embedded Natural Earth 50m land geometry must be valid JSON");
-        let shapes: Vec<LandShape> = geometry
-            .into_iter()
-            .filter_map(|rings| {
-                let exterior = rings.first()?;
-                let (min_longitude, max_longitude) = exterior
-                    .iter()
-                    .map(|(longitude, _)| *longitude)
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-                        (min.min(value), max.max(value))
-                    });
-                let (min_latitude, max_latitude) = exterior
-                    .iter()
-                    .map(|(_, latitude)| *latitude)
-                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(min, max), value| {
-                        (min.min(value), max.max(value))
-                    });
-                Some(LandShape {
-                    rings,
-                    min_latitude,
-                    max_latitude,
-                    min_longitude,
-                    max_longitude,
-                })
-            })
-            .collect();
-
-        let mut cells = vec![Vec::new(); GRID_ROWS * GRID_COLS];
-        for (shape_idx, shape) in shapes.iter().enumerate() {
-            let row_start = (((90.0 - shape.max_latitude) / 180.0) * GRID_ROWS as f64)
-                .floor()
-                .clamp(0.0, (GRID_ROWS - 1) as f64) as usize;
-            let row_end = (((90.0 - shape.min_latitude) / 180.0) * GRID_ROWS as f64)
-                .floor()
-                .clamp(0.0, (GRID_ROWS - 1) as f64) as usize;
-
-            let span_lon = shape.max_longitude - shape.min_longitude;
-            if span_lon >= 360.0 {
-                for r in row_start..=row_end {
-                    for c in 0..GRID_COLS {
-                        cells[r * GRID_COLS + c].push(shape_idx);
-                    }
-                }
-            } else {
-                let col_start = (((shape.min_longitude + 180.0).rem_euclid(360.0) / 360.0)
-                    * GRID_COLS as f64)
-                    .floor()
-                    .min((GRID_COLS - 1) as f64) as usize;
-                let col_end = (((shape.max_longitude + 180.0).rem_euclid(360.0) / 360.0)
-                    * GRID_COLS as f64)
-                    .floor()
-                    .min((GRID_COLS - 1) as f64) as usize;
-
-                for r in row_start..=row_end {
-                    if col_start <= col_end {
-                        for c in col_start..=col_end {
-                            cells[r * GRID_COLS + c].push(shape_idx);
-                        }
-                    } else {
-                        for c in col_start..GRID_COLS {
-                            cells[r * GRID_COLS + c].push(shape_idx);
-                        }
-                        for c in 0..=col_end {
-                            cells[r * GRID_COLS + c].push(shape_idx);
-                        }
-                    }
-                }
-            }
-        }
-
-        SpatialGrid { shapes, cells }
-    })
-}
-
-fn boundary_geometry() -> &'static [Vec<(f64, f64)>] {
-    static GEOMETRY: OnceLock<Vec<Vec<(f64, f64)>>> = OnceLock::new();
-    GEOMETRY
-        .get_or_init(|| {
-            serde_json::from_str(include_str!("../data/ne_50m_boundaries.json"))
-                .expect("embedded Natural Earth 50m boundary geometry must be valid JSON")
-        })
-        .as_slice()
-}
-
-fn build_globe_masks() -> GlobeMasks {
-    let mut land = vec![0_u8; MASK_WIDTH * MASK_HEIGHT];
-    for y in 0..MASK_HEIGHT {
-        let latitude = 90.0 - (y as f64 + 0.5) * 180.0 / MASK_HEIGHT as f64;
-        for x in 0..MASK_WIDTH {
-            let longitude = -180.0 + (x as f64 + 0.5) * 360.0 / MASK_WIDTH as f64;
-            if point_in_land(latitude, longitude) {
-                land[y * MASK_WIDTH + x] = 1;
-            }
-        }
-    }
-
-    let mut coast = vec![0_u8; MASK_WIDTH * MASK_HEIGHT];
-    for y in 0..MASK_HEIGHT {
-        for x in 0..MASK_WIDTH {
-            let index = y * MASK_WIDTH + x;
-            if land[index] == 0 {
-                continue;
-            }
-            let left = y * MASK_WIDTH + (x + MASK_WIDTH - 1) % MASK_WIDTH;
-            let right = y * MASK_WIDTH + (x + 1) % MASK_WIDTH;
-            let above = y.saturating_sub(1) * MASK_WIDTH + x;
-            let below = (y + 1).min(MASK_HEIGHT - 1) * MASK_WIDTH + x;
-            if land[left] == 0 || land[right] == 0 || land[above] == 0 || land[below] == 0 {
-                coast[index] = 1;
-            }
-        }
-    }
-
-    let mut boundary = vec![0_u8; MASK_WIDTH * MASK_HEIGHT];
-    for line in boundary_geometry() {
-        for segment in line.windows(2) {
-            rasterize_boundary_segment(&mut boundary, segment[0], segment[1]);
-        }
-    }
-
-    GlobeMasks {
         land,
         coast,
         boundary,
     }
-}
-
-fn point_in_land(latitude: f64, longitude: f64) -> bool {
-    let grid = spatial_grid();
-    let row = (((90.0 - latitude.clamp(-90.0, 90.0)) / 180.0) * GRID_ROWS as f64)
-        .floor()
-        .clamp(0.0, (GRID_ROWS - 1) as f64) as usize;
-    let col = (((longitude + 180.0).rem_euclid(360.0) / 360.0) * GRID_COLS as f64)
-        .floor()
-        .min((GRID_COLS - 1) as f64) as usize;
-
-    let candidate_indices = &grid.cells[row * GRID_COLS + col];
-    for &idx in candidate_indices {
-        let shape = &grid.shapes[idx];
-        let longitude_span = shape.max_longitude - shape.min_longitude;
-        let longitude_matches = longitude_span > 180.0
-            || (shape.min_longitude..=shape.max_longitude).contains(&longitude);
-        if !(shape.min_latitude..=shape.max_latitude).contains(&latitude) || !longitude_matches {
-            continue;
-        }
-        if let Some(exterior) = shape.rings.first()
-            && point_in_polygon(longitude, latitude, exterior)
-            && !shape
-                .rings
-                .iter()
-                .skip(1)
-                .any(|hole| point_in_polygon(longitude, latitude, hole))
-        {
-            return true;
-        }
-    }
-    false
 }
 
 fn mask_index(latitude: f64, longitude: f64) -> usize {
@@ -1094,68 +913,6 @@ fn mask_index(latitude: f64, longitude: f64) -> usize {
         .floor()
         .min((MASK_HEIGHT - 1) as f64) as usize;
     y * MASK_WIDTH + x
-}
-
-fn rasterize_boundary_segment(mask: &mut [u8], start: (f64, f64), end: (f64, f64)) {
-    let (start_longitude, start_latitude) = start;
-    let (end_longitude, end_latitude) = end;
-    let mut longitude_delta = end_longitude - start_longitude;
-    if longitude_delta > 180.0 {
-        longitude_delta -= 360.0;
-    } else if longitude_delta < -180.0 {
-        longitude_delta += 360.0;
-    }
-    let latitude_delta = end_latitude - start_latitude;
-    let steps = (longitude_delta.abs() * MASK_WIDTH as f64 / 360.0)
-        .max(latitude_delta.abs() * MASK_HEIGHT as f64 / 180.0)
-        .ceil()
-        .max(1.0) as usize;
-
-    for step in 0..=steps {
-        let amount = step as f64 / steps as f64;
-        let longitude = start_longitude + longitude_delta * amount;
-        let latitude = start_latitude + latitude_delta * amount;
-        mark_boundary_point(mask, latitude, longitude);
-    }
-}
-
-fn mark_boundary_point(mask: &mut [u8], latitude: f64, longitude: f64) {
-    let wrapped_longitude = (longitude + 180.0).rem_euclid(360.0);
-    let center_x = ((wrapped_longitude / 360.0) * MASK_WIDTH as f64).floor() as isize;
-    let center_y =
-        (((90.0 - latitude.clamp(-90.0, 90.0)) / 180.0) * MASK_HEIGHT as f64).floor() as isize;
-    for y_offset in -1_isize..=1_isize {
-        for x_offset in -1_isize..=1_isize {
-            if x_offset.abs() + y_offset.abs() > 1 {
-                continue;
-            }
-            let x = (center_x + x_offset).rem_euclid(MASK_WIDTH as isize) as usize;
-            let y = (center_y + y_offset).clamp(0, MASK_HEIGHT as isize - 1) as usize;
-            mask[y * MASK_WIDTH + x] = 1;
-        }
-    }
-}
-
-fn point_in_polygon(x: f64, y: f64, polygon: &[(f64, f64)]) -> bool {
-    if polygon.len() < 3 {
-        return false;
-    }
-    let mut inside = false;
-    let mut previous = polygon.len() - 1;
-    for current in 0..polygon.len() {
-        let (current_x, current_y) = polygon[current];
-        let (previous_x, previous_y) = polygon[previous];
-        let crosses = (current_y > y) != (previous_y > y);
-        if crosses {
-            let intersection =
-                (previous_x - current_x) * (y - current_y) / (previous_y - current_y) + current_x;
-            if x < intersection {
-                inside = !inside;
-            }
-        }
-        previous = current;
-    }
-    inside
 }
 
 fn interpolate_arc(start: DVec3, end: DVec3, amount: f64) -> DVec3 {
@@ -1220,11 +977,14 @@ mod tests {
 
     #[test]
     fn cached_masks_include_coasts_and_country_boundaries() {
-        let masks = globe_masks();
-        assert_eq!(masks.land.len(), MASK_WIDTH * MASK_HEIGHT);
-        assert!(masks.land.iter().any(|value| *value != 0));
-        assert!(masks.coast.iter().any(|value| *value != 0));
-        assert!(masks.boundary.iter().any(|value| *value != 0));
+        assert_eq!(MASKS_BIN.len(), BITMAP_SIZE * 3);
+        assert!(MASKS_BIN[..BITMAP_SIZE].iter().any(|v| *v != 0));
+        assert!(
+            MASKS_BIN[BITMAP_SIZE..BITMAP_SIZE * 2]
+                .iter()
+                .any(|v| *v != 0)
+        );
+        assert!(MASKS_BIN[BITMAP_SIZE * 2..].iter().any(|v| *v != 0));
     }
 
     #[test]

@@ -7,8 +7,8 @@ use std::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeId {
-    CyberOrbital,
     #[default]
+    CyberOrbital,
     TacticalRadar,
     MinimalAtlas,
     AmberCrt,
@@ -60,7 +60,7 @@ pub struct App {
 
 impl App {
     pub fn new(topology: Topology) -> Self {
-        Self::with_theme(topology, ThemeId::TacticalRadar)
+        Self::with_theme(topology, ThemeId::CyberOrbital)
     }
 
     pub fn with_theme(topology: Topology, theme: ThemeId) -> Self {
@@ -561,9 +561,9 @@ mod tests {
     #[test]
     fn theme_and_interactive_controls_work() {
         let mut app = app();
-        assert_eq!(app.theme(), ThemeId::TacticalRadar);
+        assert_eq!(app.theme(), ThemeId::CyberOrbital);
         app.handle_key(key(KeyCode::Char('t'), KeyModifiers::NONE));
-        assert_eq!(app.theme(), ThemeId::MinimalAtlas);
+        assert_eq!(app.theme(), ThemeId::TacticalRadar);
         assert!(app.is_paused()); // Default is paused
         app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
         assert!(!app.is_paused()); // Unpaused

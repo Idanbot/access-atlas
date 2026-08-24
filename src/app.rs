@@ -5,6 +5,38 @@ use std::{
     time::Duration,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ThemeId {
+    #[default]
+    CyberOrbital,
+    TacticalRadar,
+    MinimalAtlas,
+    AmberCrt,
+    DeepSpace,
+}
+
+impl ThemeId {
+    pub fn next(self) -> Self {
+        match self {
+            Self::CyberOrbital => Self::TacticalRadar,
+            Self::TacticalRadar => Self::MinimalAtlas,
+            Self::MinimalAtlas => Self::AmberCrt,
+            Self::AmberCrt => Self::DeepSpace,
+            Self::DeepSpace => Self::CyberOrbital,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::CyberOrbital => "Cyber Orbital",
+            Self::TacticalRadar => "Tactical Radar (P31)",
+            Self::MinimalAtlas => "Minimal Slate Atlas",
+            Self::AmberCrt => "Amber CRT Phosphor",
+            Self::DeepSpace => "Deep Space Nebula",
+        }
+    }
+}
+
 pub struct App {
     topology: Topology,
     target_index: usize,
@@ -12,6 +44,7 @@ pub struct App {
     access_option_index: usize,
     detail_index: usize,
     elapsed: Duration,
+    continuous_time: Duration,
     route_progress: f32,
     rotation: f64,
     focus_rotation: f64,
@@ -19,12 +52,20 @@ pub struct App {
     focus_pitch: f64,
     zoom: f64,
     focus_zoom: f64,
+    paused: bool,
+    theme: ThemeId,
+    show_graticule: bool,
+    show_stars: bool,
     dirty: bool,
     quit: bool,
 }
 
 impl App {
     pub fn new(topology: Topology) -> Self {
+        Self::with_theme(topology, ThemeId::CyberOrbital)
+    }
+
+    pub fn with_theme(topology: Topology, theme: ThemeId) -> Self {
         let focus_rotation = target_focus_rotation(&topology.targets[0]);
         let focus_pitch = target_focus_pitch(&topology.targets[0]);
         let focus_zoom = target_focus_zoom(&topology.targets[0]);
@@ -35,6 +76,7 @@ impl App {
             access_option_index: 0,
             detail_index: 0,
             elapsed: Duration::ZERO,
+            continuous_time: Duration::ZERO,
             route_progress: 0.0,
             rotation: focus_rotation,
             focus_rotation,
@@ -42,6 +84,10 @@ impl App {
             focus_pitch,
             zoom: focus_zoom,
             focus_zoom,
+            paused: false,
+            theme,
+            show_graticule: true,
+            show_stars: true,
             dirty: true,
             quit: false,
         }
@@ -118,6 +164,14 @@ impl App {
         self.route_progress
     }
 
+    pub fn elapsed(&self) -> Duration {
+        self.elapsed
+    }
+
+    pub fn continuous_time(&self) -> Duration {
+        self.continuous_time
+    }
+
     pub fn rotation(&self) -> f64 {
         self.rotation
     }
@@ -142,6 +196,30 @@ impl App {
         self.focus_zoom
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    pub fn theme(&self) -> ThemeId {
+        self.theme
+    }
+
+    pub fn show_graticule(&self) -> bool {
+        self.show_graticule
+    }
+
+    pub fn show_stars(&self) -> bool {
+        self.show_stars
+    }
+
+    pub fn camera_azimuth_deg(&self) -> f64 {
+        (PI / 2.0 - self.rotation).to_degrees().rem_euclid(360.0)
+    }
+
+    pub fn camera_pitch_deg(&self) -> f64 {
+        self.pitch.to_degrees()
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -163,8 +241,14 @@ impl App {
 
     pub fn tick(&mut self, delta: Duration) {
         let was_animating = self.is_animating();
-        self.elapsed += delta;
-        self.route_progress = (self.elapsed.as_secs_f32() / 2.5).min(1.0);
+        self.continuous_time += delta;
+        if !self.paused {
+            self.elapsed += delta;
+            self.route_progress = (self.elapsed.as_secs_f32() / 2.5).min(1.0);
+            if self.elapsed >= Duration::from_secs(6) {
+                self.next_target();
+            }
+        }
         self.rotation = approach_angle(
             self.rotation,
             self.focus_rotation,
@@ -172,9 +256,7 @@ impl App {
         );
         self.pitch = approach_angle(self.pitch, self.focus_pitch, delta.as_secs_f64() * 2.4);
         self.zoom = approach_value(self.zoom, self.focus_zoom, delta.as_secs_f64() * 0.8);
-        if self.elapsed >= Duration::from_secs(6) {
-            self.next_target();
-        }
+
         if was_animating || self.is_animating() {
             self.dirty = true;
         }
@@ -183,6 +265,17 @@ impl App {
     pub fn handle_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char(' ') => self.toggle_pause(),
+            KeyCode::Char('t') => self.cycle_theme(),
+            KeyCode::Char('g') => self.toggle_graticule(),
+            KeyCode::Char('s') => self.toggle_stars(),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_in(),
+            KeyCode::Char('-') | KeyCode::Char('_') => self.zoom_out(),
+            KeyCode::Char('h') | KeyCode::Char('a') => self.manual_pan(-0.1, 0.0),
+            KeyCode::Char('l') | KeyCode::Char('d') => self.manual_pan(0.1, 0.0),
+            KeyCode::Char('k') | KeyCode::Char('w') => self.manual_pan(0.0, 0.08),
+            KeyCode::Char('j') => self.manual_pan(0.0, -0.08),
+            KeyCode::Char('r') => self.reset_camera(),
             KeyCode::Left => self.previous_target(),
             KeyCode::Right => self.next_target(),
             KeyCode::Up => self.previous_detail(),
@@ -195,6 +288,53 @@ impl App {
             KeyCode::Enter => {}
             _ => {}
         }
+    }
+
+    pub fn toggle_pause(&mut self) {
+        self.paused = !self.paused;
+        self.dirty = true;
+    }
+
+    pub fn cycle_theme(&mut self) {
+        self.theme = self.theme.next();
+        self.dirty = true;
+    }
+
+    pub fn set_theme(&mut self, theme: ThemeId) {
+        self.theme = theme;
+        self.dirty = true;
+    }
+
+    pub fn toggle_graticule(&mut self) {
+        self.show_graticule = !self.show_graticule;
+        self.dirty = true;
+    }
+
+    pub fn toggle_stars(&mut self) {
+        self.show_stars = !self.show_stars;
+        self.dirty = true;
+    }
+
+    pub fn zoom_in(&mut self) {
+        self.focus_zoom = (self.focus_zoom * 1.15).min(3.0);
+        self.dirty = true;
+    }
+
+    pub fn zoom_out(&mut self) {
+        self.focus_zoom = (self.focus_zoom / 1.15).max(0.6);
+        self.dirty = true;
+    }
+
+    pub fn manual_pan(&mut self, delta_rot: f64, delta_pitch: f64) {
+        self.focus_rotation = (self.focus_rotation + delta_rot).rem_euclid(TAU);
+        self.focus_pitch =
+            (self.focus_pitch + delta_pitch).clamp(-PI / 2.0 + 0.05, PI / 2.0 - 0.05);
+        self.dirty = true;
+    }
+
+    pub fn reset_camera(&mut self) {
+        self.update_camera_focus();
+        self.dirty = true;
     }
 
     pub fn next_target(&mut self) {
@@ -438,5 +578,24 @@ mod tests {
         app.next_target();
         assert!(app.needs_render());
         assert!(app.is_animating());
+    }
+
+    #[test]
+    fn theme_and_interactive_controls_work() {
+        let mut app = app();
+        assert_eq!(app.theme(), ThemeId::CyberOrbital);
+        app.handle_key(key(KeyCode::Char('t'), KeyModifiers::NONE));
+        assert_eq!(app.theme(), ThemeId::TacticalRadar);
+        app.handle_key(key(KeyCode::Char(' '), KeyModifiers::NONE));
+        assert!(app.is_paused());
+        app.handle_key(key(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert!(!app.show_graticule());
+        app.handle_key(key(KeyCode::Char('s'), KeyModifiers::NONE));
+        assert!(!app.show_stars());
+        let initial_zoom = app.focus_zoom();
+        app.handle_key(key(KeyCode::Char('+'), KeyModifiers::NONE));
+        assert!(app.focus_zoom() > initial_zoom);
+        app.handle_key(key(KeyCode::Char('-'), KeyModifiers::NONE));
+        assert!((app.focus_zoom() - initial_zoom).abs() < 0.001);
     }
 }

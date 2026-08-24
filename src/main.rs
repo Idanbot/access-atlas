@@ -12,7 +12,11 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 use std::{io, path::PathBuf, time::Instant};
 
-use access_atlas::{app::App, model::Topology, render};
+use access_atlas::{
+    app::{App, ThemeId},
+    model::Topology,
+    render,
+};
 
 const EMBEDDED_DEMO: &str = include_str!("../data/demo-topology.json");
 
@@ -28,6 +32,12 @@ struct Args {
 
     #[arg(long, help = "Parse and validate the topology without opening the TUI")]
     validate: bool,
+
+    #[arg(
+        long,
+        help = "Color theme: cyber-orbital, tactical-radar, minimal-atlas, amber-crt, deep-space"
+    )]
+    theme: Option<String>,
 }
 
 fn main() -> Result<()> {
@@ -53,7 +63,17 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    run_tui(App::new(topology))
+    let theme = match args.theme.as_deref() {
+        Some("tactical-radar") | Some("radar") | Some("tactical") => ThemeId::TacticalRadar,
+        Some("minimal-atlas") | Some("atlas") | Some("minimal") | Some("slate") => {
+            ThemeId::MinimalAtlas
+        }
+        Some("amber-crt") | Some("amber") | Some("crt") => ThemeId::AmberCrt,
+        Some("deep-space") | Some("space") | Some("nebula") => ThemeId::DeepSpace,
+        _ => ThemeId::CyberOrbital,
+    };
+
+    run_tui(App::with_theme(topology, theme))
 }
 
 fn load_topology(path: &PathBuf) -> Result<Topology> {
@@ -95,9 +115,9 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
             app.mark_rendered();
         }
         let poll_timeout = if app.is_animating() {
-            std::time::Duration::from_millis(50)
+            std::time::Duration::from_millis(40)
         } else {
-            std::time::Duration::from_millis(250)
+            std::time::Duration::from_millis(80)
         };
         if poll(poll_timeout)?
             && let Event::Key(key) = read()?

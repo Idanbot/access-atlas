@@ -12,9 +12,6 @@ use ratatui::{
 const MASK_WIDTH: usize = 1440;
 const MASK_HEIGHT: usize = 720;
 
-const GRID_COLS: usize = 72; // 5 degrees per column
-const GRID_ROWS: usize = 36; // 5 degrees per row
-
 pub const BRAILLE_DOTS: [(usize, usize, u8); 8] = [
     (0, 0, 0b0000_0001), // dot 1
     (0, 1, 0b0000_0010), // dot 2

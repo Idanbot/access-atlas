@@ -1,0 +1,733 @@
+{
+  "schema_version": 1,
+  "name": "Access Atlas demo topology",
+  "generated_at": "2026-08-22T00:00:00Z",
+  "origin": {
+    "id": "local-workstation",
+    "label": "Local workstation",
+    "location": {
+      "label": "Demo origin",
+      "region": "local",
+      "city": "Tel Aviv",
+      "country": "IL",
+      "timezone": "Asia/Jerusalem",
+      "source": "Local workstation metadata (mock)",
+      "precision": "city",
+      "latitude": 32.08,
+      "longitude": 34.78
+    }
+  },
+  "targets": [
+    {
+      "id": "gcp-eu-micro",
+      "label": "Europe micro VM",
+      "kind": "compute_instance",
+      "provider": "gcp",
+      "location": {
+        "label": "Europe",
+        "region": "europe-west4",
+        "city": "Amsterdam",
+        "country": "NL",
+        "timezone": "Europe/Amsterdam",
+        "source": "GCP region metadata (mock)",
+        "precision": "city",
+        "latitude": 52.37,
+        "longitude": 4.90
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 1234578,
+        "latency_ms": 42.0,
+        "packet_loss_percent": 0.0,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "vpc": "demo-eu-vpc",
+        "subnet": "demo-eu-subnet",
+        "private_ip": "10.42.10.10",
+        "public_ip": "192.0.2.10",
+        "port": "22",
+        "firewall": "demo-ssh-iap"
+      },
+      "metadata": {
+        "project_id": "demo-platform-eu-001",
+        "zone": "europe-west4-a",
+        "machine_type": "e2-micro",
+        "instance_id": "demo-instance-eu-001",
+        "image": "ubuntu-2404-lts-amd64"
+      },
+      "network_types": [
+        {
+          "id": "ssh",
+          "label": "SSH",
+          "binary": "ssh",
+          "description": "Interactive shell access through GCP-managed SSH paths.",
+          "access_options": [
+            {
+              "id": "gcp-iap-ssh",
+              "label": "IAP + SSH",
+              "command": "gcloud compute ssh europe-micro --project=demo-platform-eu-001 --zone=europe-west4-a --tunnel-through-iap",
+              "route": ["local-workstation", "gcp-iap", "gcp-eu-micro"],
+              "notes": "Mock command; IAP avoids exposing an SSH ingress path."
+            },
+            {
+              "id": "gcp-os-login",
+              "label": "OS Login via IAP",
+              "command": "gcloud compute ssh europe-micro --project=demo-platform-eu-001 --zone=europe-west4-a --tunnel-through-iap --strict-host-key-checking=no",
+              "route": ["local-workstation", "gcp-os-login", "gcp-iap", "gcp-eu-micro"],
+              "notes": "Mock command; the account is authorized by OS Login."
+            },
+            {
+              "id": "gcp-proxycommand",
+              "label": "IAP proxy preview",
+              "command": "gcloud compute ssh europe-micro --project=demo-platform-eu-001 --zone=europe-west4-a --tunnel-through-iap --dry-run",
+              "route": ["local-workstation", "gcloud", "gcp-iap", "gcp-eu-micro"],
+              "notes": "Mock dry-run showing the SSH ProxyCommand assembled by gcloud."
+            }
+          ]
+        },
+        {
+          "id": "console",
+          "label": "GCP console",
+          "binary": "gcloud",
+          "description": "Out-of-band serial access when the guest network is unavailable.",
+          "access_options": [
+            {
+              "id": "gcp-serial-console",
+              "label": "Serial console",
+              "command": "gcloud compute connect-to-serial-port europe-micro --project=demo-platform-eu-001 --zone=europe-west4-a",
+              "route": ["local-workstation", "gcp-control-plane", "gcp-eu-micro"],
+              "notes": "Mock command; requires the serial-port IAM permission."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "home-pi4",
+      "label": "Home Pi 4",
+      "kind": "single_board_computer",
+      "provider": "cloudflare",
+      "location": {
+        "label": "Home lab",
+        "region": "home",
+        "city": "Tel Aviv",
+        "country": "IL",
+        "timezone": "Asia/Jerusalem",
+        "source": "Cloudflare tunnel metadata (mock)",
+        "precision": "city",
+        "latitude": 32.09,
+        "longitude": 34.78
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 2789012,
+        "latency_ms": 18.0,
+        "packet_loss_percent": 0.2,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "segment": "home-lan",
+        "subnet": "10.0.4.0/24",
+        "private_ip": "10.0.4.4",
+        "public_ip": "198.51.100.24",
+        "port": "22",
+        "tunnel": "demo-home-ssh"
+      },
+      "metadata": {
+        "device": "Raspberry Pi 4",
+        "os": "Ubuntu Server",
+        "architecture": "aarch64",
+        "cloudflare_host": "pi4.demo.invalid",
+        "ssh_alias": "home-pi4"
+      },
+      "network_types": [
+        {
+          "id": "ssh",
+          "label": "SSH",
+          "binary": "ssh",
+          "description": "SSH access through tunnel, alias, or the private LAN.",
+          "access_options": [
+            {
+              "id": "cloudflare-alias",
+              "label": "Cloudflare SSH alias",
+              "command": "ssh home-pi4",
+              "route": ["local-workstation", "cloudflare-access", "demo-home-ssh", "home-pi4"],
+              "notes": "Mock command; the SSH config owns the ProxyCommand."
+            },
+            {
+              "id": "cloudflare-proxy",
+              "label": "cloudflared SSH",
+              "command": "cloudflared access ssh --hostname pi4.demo.invalid",
+              "route": ["local-workstation", "cloudflared", "demo-home-ssh", "home-pi4"],
+              "notes": "Mock command; Access authentication happens in the browser when required."
+            },
+            {
+              "id": "home-lan-ssh",
+              "label": "Home LAN SSH",
+              "command": "ssh pi@10.0.4.4",
+              "route": ["local-workstation", "home-lan", "home-pi4"],
+              "notes": "Mock command; only reachable when the workstation is on the home LAN."
+            }
+          ]
+        },
+        {
+          "id": "cloudflare",
+          "label": "Cloudflare Access",
+          "binary": "cloudflared",
+          "description": "Identity-aware tunnel access for the home SSH service.",
+          "access_options": [
+            {
+              "id": "cloudflare-login",
+              "label": "Access login",
+              "command": "cloudflared access login https://pi4.demo.invalid",
+              "route": ["local-workstation", "cloudflare-access", "home-pi4"],
+              "notes": "Mock command; opens the configured identity provider."
+            },
+            {
+              "id": "cloudflare-tunnel",
+              "label": "Access SSH tunnel",
+              "command": "cloudflared access ssh --hostname pi4.demo.invalid",
+              "route": ["local-workstation", "cloudflare-access", "demo-home-ssh", "home-pi4"],
+              "notes": "Mock command; no tunnel or credential is created by this demo."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k8s-eu-staging",
+      "label": "Kubernetes Europe cluster",
+      "kind": "kubernetes_cluster",
+      "provider": "kubernetes",
+      "location": {
+        "label": "Europe cluster",
+        "region": "europe-central2",
+        "city": "Frankfurt",
+        "country": "DE",
+        "timezone": "Europe/Berlin",
+        "source": "Kubernetes cluster metadata (mock)",
+        "precision": "city",
+        "latitude": 50.11,
+        "longitude": 8.68
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 987654,
+        "latency_ms": 51.0,
+        "packet_loss_percent": 0.0,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "vpc": "demo-eu-vpc",
+        "subnet": "demo-k8s-subnet",
+        "private_endpoint": "10.43.0.1",
+        "service_cidr": "10.44.0.0/16",
+        "pod_cidr": "10.45.0.0/16"
+      },
+      "metadata": {
+        "context": "demo-eu-staging",
+        "namespace": "platform",
+        "cluster_version": "1.36.3",
+        "node_count": "3",
+        "ingress": "demo-ingress.invalid"
+      },
+      "network_types": [
+        {
+          "id": "kubernetes",
+          "label": "Kubernetes",
+          "binary": "kubectl",
+          "description": "Kubernetes API access through the selected kubeconfig context.",
+          "access_options": [
+            {
+              "id": "kubectl-context",
+              "label": "List pods",
+              "command": "kubectl --context demo-eu-staging -n platform get pods",
+              "route": ["local-workstation", "kubeconfig", "kube-api", "k8s-eu-staging"],
+              "notes": "Mock command; context and namespace are explicit."
+            },
+            {
+              "id": "kubectl-port-forward",
+              "label": "Port-forward service",
+              "command": "kubectl --context demo-eu-staging -n platform port-forward svc/demo-api 8080:80",
+              "route": ["local-workstation", "kubeconfig", "kube-api", "demo-api", "k8s-eu-staging"],
+              "notes": "Mock command; forwards a local port to a service."
+            },
+            {
+              "id": "kubectl-exec",
+              "label": "Exec into pod",
+              "command": "kubectl --context demo-eu-staging -n platform exec -it deploy/demo-api -- sh",
+              "route": ["local-workstation", "kubeconfig", "kube-api", "demo-api", "k8s-eu-staging"],
+              "notes": "Mock command; opens a shell in a selected workload."
+            }
+          ]
+        },
+        {
+          "id": "helm",
+          "label": "Helm",
+          "binary": "helm",
+          "description": "Chart and release inspection against the same cluster context.",
+          "access_options": [
+            {
+              "id": "helm-list",
+              "label": "List releases",
+              "command": "helm --kube-context demo-eu-staging -n platform list",
+              "route": ["local-workstation", "kubeconfig", "helm", "k8s-eu-staging"],
+              "notes": "Mock command; read-only release inventory."
+            },
+            {
+              "id": "helm-status",
+              "label": "Release status",
+              "command": "helm --kube-context demo-eu-staging -n platform status demo-api",
+              "route": ["local-workstation", "kubeconfig", "helm", "demo-api", "k8s-eu-staging"],
+              "notes": "Mock command; inspect a named release."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tailscale-lab-node",
+      "label": "Lab NUC",
+      "kind": "linux_host",
+      "provider": "tailscale",
+      "location": {
+        "label": "Lab network",
+        "region": "tailnet-lab",
+        "city": "Berlin",
+        "country": "DE",
+        "timezone": "Europe/Berlin",
+        "source": "Tailscale node metadata (mock)",
+        "precision": "city",
+        "latitude": 52.52,
+        "longitude": 13.40
+      },
+      "status": {
+        "state": "degraded",
+        "uptime_seconds": 456789,
+        "latency_ms": 76.0,
+        "packet_loss_percent": 1.4,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "tailnet": "demo-tailnet",
+        "tailscale_ip": "100.64.0.12",
+        "subnet_routes": "10.20.0.0/16",
+        "port": "22",
+        "connection": "relay"
+      },
+      "metadata": {
+        "hostname": "lab-nuc",
+        "os": "linux",
+        "role": "build runner",
+        "advertised_tags": "tag:demo,tag:build"
+      },
+      "network_types": [
+        {
+          "id": "ssh",
+          "label": "SSH",
+          "binary": "ssh",
+          "description": "SSH access over the tailnet using aliases or direct node addresses.",
+          "access_options": [
+            {
+              "id": "tailscale-ssh",
+              "label": "Tailscale SSH",
+              "command": "ssh lab-nuc",
+              "route": ["local-workstation", "tailscale-relay", "tailscale-lab-node"],
+              "notes": "Mock command; the tailnet SSH policy authorizes the session."
+            },
+            {
+              "id": "tailnet-ip-ssh",
+              "label": "Tailnet IP SSH",
+              "command": "ssh 100.64.0.12",
+              "route": ["local-workstation", "tailscale-network", "tailscale-lab-node"],
+              "notes": "Mock command; direct tailnet addressing."
+            },
+            {
+              "id": "tailscale-ssh-command",
+              "label": "Tailscale SSH command",
+              "command": "tailscale ssh lab-nuc",
+              "route": ["local-workstation", "tailscale-cli", "tailscale-lab-node"],
+              "notes": "Mock command; delegates SSH policy to the Tailscale CLI."
+            }
+          ]
+        },
+        {
+          "id": "tailscale",
+          "label": "Tailscale",
+          "binary": "tailscale",
+          "description": "Tailnet health and route inspection.",
+          "access_options": [
+            {
+              "id": "tailscale-status",
+              "label": "Tailnet status",
+              "command": "tailscale status --json",
+              "route": ["local-workstation", "tailscale-cli", "tailscale-lab-node"],
+              "notes": "Mock command; inspect peers and connection state."
+            },
+            {
+              "id": "tailscale-netcheck",
+              "label": "Network check",
+              "command": "tailscale netcheck",
+              "route": ["local-workstation", "tailscale-cli", "tailscale-relay", "tailscale-lab-node"],
+              "notes": "Mock command; inspect direct versus relay connectivity."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "aws-eu-runner",
+      "label": "AWS Europe runner",
+      "kind": "ec2_instance",
+      "provider": "aws",
+      "location": {
+        "label": "AWS Europe",
+        "region": "eu-central-1",
+        "city": "Frankfurt",
+        "country": "DE",
+        "timezone": "Europe/Berlin",
+        "source": "AWS region metadata (mock)",
+        "precision": "city",
+        "latitude": 50.11,
+        "longitude": 8.68
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 765432,
+        "latency_ms": 63.0,
+        "packet_loss_percent": 0.0,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "vpc": "vpc-0demo1234",
+        "subnet": "subnet-0demo1234",
+        "private_ip": "10.50.10.20",
+        "public_ip": "203.0.113.20",
+        "port": "22",
+        "security_group": "sg-demo-ssh"
+      },
+      "metadata": {
+        "account_alias": "demo-platform",
+        "account_id": "000000000000",
+        "region": "eu-central-1",
+        "instance_id": "i-0demo123456789",
+        "instance_type": "t3.micro"
+      },
+      "network_types": [
+        {
+          "id": "ssh",
+          "label": "SSH",
+          "binary": "ssh",
+          "description": "SSH access using an alias, direct address, or bastion route.",
+          "access_options": [
+            {
+              "id": "aws-ssh-alias",
+              "label": "SSH alias",
+              "command": "ssh aws-eu-runner",
+              "route": ["local-workstation", "aws-vpc", "aws-eu-runner"],
+              "notes": "Mock command; the local SSH config selects the route."
+            },
+            {
+              "id": "aws-ssh-direct",
+              "label": "Direct SSH",
+              "command": "ssh ec2-user@203.0.113.20",
+              "route": ["local-workstation", "internet", "aws-eu-runner"],
+              "notes": "Mock documentation address; no host key or identity is included."
+            },
+            {
+              "id": "aws-ssh-bastion",
+              "label": "Bastion SSH",
+              "command": "ssh -J bastion aws-eu-runner",
+              "route": ["local-workstation", "aws-bastion", "aws-vpc", "aws-eu-runner"],
+              "notes": "Mock command; the bastion is a separate access hop."
+            }
+          ]
+        },
+        {
+          "id": "aws-session",
+          "label": "AWS session",
+          "binary": "aws",
+          "description": "Control-plane mediated access without inbound SSH.",
+          "access_options": [
+            {
+              "id": "aws-ssm",
+              "label": "SSM session",
+              "command": "aws ssm start-session --target i-0demo123456789 --region eu-central-1",
+              "route": ["local-workstation", "aws-ssm", "aws-eu-runner"],
+              "notes": "Mock command; the instance needs the SSM agent and IAM role."
+            },
+            {
+              "id": "aws-describe",
+              "label": "Describe instance",
+              "command": "aws ec2 describe-instances --instance-ids i-0demo123456789 --region eu-central-1",
+              "route": ["local-workstation", "aws-api", "aws-eu-runner"],
+              "notes": "Mock command; read-only inventory path."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "azure-devbox",
+      "label": "Azure dev box",
+      "kind": "virtual_machine",
+      "provider": "azure",
+      "location": {
+        "label": "Azure Europe",
+        "region": "northeurope",
+        "city": "Dublin",
+        "country": "IE",
+        "timezone": "Europe/Dublin",
+        "source": "Azure region metadata (mock)",
+        "precision": "city",
+        "latitude": 53.35,
+        "longitude": -6.26
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 345678,
+        "latency_ms": 88.0,
+        "packet_loss_percent": 0.1,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "vnet": "demo-eu-vnet",
+        "subnet": "demo-dev-subnet",
+        "private_ip": "10.60.10.15",
+        "public_ip": "203.0.113.30",
+        "port": "22",
+        "network_security_group": "demo-dev-nsg"
+      },
+      "metadata": {
+        "subscription": "demo-subscription",
+        "resource_group": "demo-dev-rg",
+        "region": "northeurope",
+        "vm_size": "Standard_B1s",
+        "image": "Ubuntu2204"
+      },
+      "network_types": [
+        {
+          "id": "ssh",
+          "label": "SSH",
+          "binary": "ssh",
+          "description": "SSH access through Azure CLI or a Bastion-backed route.",
+          "access_options": [
+            {
+              "id": "azure-ssh",
+              "label": "Azure CLI SSH",
+              "command": "az ssh vm --resource-group demo-dev-rg --name azure-devbox",
+              "route": ["local-workstation", "azure-control-plane", "azure-devbox"],
+              "notes": "Mock command; Azure CLI brokers the connection."
+            },
+            {
+              "id": "azure-bastion",
+              "label": "Azure Bastion SSH",
+              "command": "az network bastion ssh --name demo-bastion --resource-group demo-dev-rg --target-resource-id /subscriptions/demo/resourceGroups/demo-dev-rg/providers/Microsoft.Compute/virtualMachines/azure-devbox",
+              "route": ["local-workstation", "azure-bastion", "azure-devbox"],
+              "notes": "Mock command; Bastion keeps the VM off the public network."
+            }
+          ]
+        },
+        {
+          "id": "azure-control-plane",
+          "label": "Azure control plane",
+          "binary": "az",
+          "description": "Azure VM inventory and control-plane access paths.",
+          "access_options": [
+            {
+              "id": "azure-show",
+              "label": "Show VM",
+              "command": "az vm show --resource-group demo-dev-rg --name azure-devbox",
+              "route": ["local-workstation", "azure-api", "azure-devbox"],
+              "notes": "Mock command; read-only resource inspection."
+            },
+            {
+              "id": "azure-run-command",
+              "label": "Run command",
+              "command": "az vm run-command invoke --resource-group demo-dev-rg --name azure-devbox --command-id RunShellScript",
+              "route": ["local-workstation", "azure-api", "azure-agent", "azure-devbox"],
+              "notes": "Mock command; uses the guest agent instead of SSH."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "gcp-us-micro",
+      "label": "US East micro VM",
+      "kind": "compute_instance",
+      "provider": "gcp",
+      "location": {
+        "label": "US East",
+        "region": "us-east4",
+        "city": "Ashburn",
+        "country": "US",
+        "timezone": "America/New_York",
+        "source": "GCP region metadata (mock)",
+        "precision": "city",
+        "latitude": 39.04,
+        "longitude": -77.49
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 654321,
+        "latency_ms": 119.0,
+        "packet_loss_percent": 0.1,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "vpc": "demo-us-vpc",
+        "subnet": "demo-us-subnet",
+        "private_ip": "10.72.10.10",
+        "public_ip": "192.0.2.40",
+        "port": "22",
+        "firewall": "demo-us-ssh-iap"
+      },
+      "metadata": {
+        "project_id": "demo-platform-us-001",
+        "zone": "us-east4-a",
+        "machine_type": "e2-micro",
+        "instance_id": "demo-instance-us-001",
+        "image": "ubuntu-2404-lts-amd64"
+      },
+      "network_types": [
+        {
+          "id": "ssh",
+          "label": "SSH",
+          "binary": "ssh",
+          "description": "Interactive shell access through US East GCP-managed SSH paths.",
+          "access_options": [
+            {
+              "id": "gcp-us-iap-ssh",
+              "label": "IAP + SSH",
+              "command": "gcloud compute ssh us-east-micro --project=demo-platform-us-001 --zone=us-east4-a --tunnel-through-iap",
+              "route": ["local-workstation", "gcp-iap", "gcp-us-micro"],
+              "notes": "Mock command; IAP avoids exposing an SSH ingress path."
+            },
+            {
+              "id": "gcp-us-os-login",
+              "label": "OS Login via IAP",
+              "command": "gcloud compute ssh us-east-micro --project=demo-platform-us-001 --zone=us-east4-a --tunnel-through-iap --strict-host-key-checking=no",
+              "route": ["local-workstation", "gcp-os-login", "gcp-iap", "gcp-us-micro"],
+              "notes": "Mock command; the account is authorized by OS Login."
+            },
+            {
+              "id": "gcp-us-proxycommand",
+              "label": "IAP proxy preview",
+              "command": "gcloud compute ssh us-east-micro --project=demo-platform-us-001 --zone=us-east4-a --tunnel-through-iap --dry-run",
+              "route": ["local-workstation", "gcloud", "gcp-iap", "gcp-us-micro"],
+              "notes": "Mock dry-run showing the SSH ProxyCommand assembled by gcloud."
+            }
+          ]
+        },
+        {
+          "id": "console",
+          "label": "GCP console",
+          "binary": "gcloud",
+          "description": "Out-of-band serial access for the US East VM.",
+          "access_options": [
+            {
+              "id": "gcp-us-serial-console",
+              "label": "Serial console",
+              "command": "gcloud compute connect-to-serial-port us-east-micro --project=demo-platform-us-001 --zone=us-east4-a",
+              "route": ["local-workstation", "gcp-control-plane", "gcp-us-micro"],
+              "notes": "Mock command; requires the serial-port IAM permission."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "k8s-jp-tokyo",
+      "label": "Kubernetes Japan cluster",
+      "kind": "kubernetes_cluster",
+      "provider": "kubernetes",
+      "location": {
+        "label": "Japan cluster",
+        "region": "asia-northeast1",
+        "city": "Tokyo",
+        "country": "JP",
+        "timezone": "Asia/Tokyo",
+        "source": "Kubernetes cluster metadata (mock)",
+        "precision": "city",
+        "latitude": 35.68,
+        "longitude": 139.65
+      },
+      "status": {
+        "state": "healthy",
+        "uptime_seconds": 876543,
+        "latency_ms": 182.0,
+        "packet_loss_percent": 0.2,
+        "checked_at": "2026-08-22T00:00:00Z"
+      },
+      "network": {
+        "vpc": "demo-jp-vpc",
+        "subnet": "demo-jp-k8s-subnet",
+        "private_endpoint": "10.83.0.1",
+        "service_cidr": "10.84.0.0/16",
+        "pod_cidr": "10.85.0.0/16"
+      },
+      "metadata": {
+        "context": "demo-jp-tokyo",
+        "namespace": "platform",
+        "cluster_version": "1.36.3",
+        "node_count": "3",
+        "ingress": "demo-jp-ingress.invalid"
+      },
+      "network_types": [
+        {
+          "id": "kubernetes",
+          "label": "Kubernetes",
+          "binary": "kubectl",
+          "description": "Kubernetes API access through the Tokyo kubeconfig context.",
+          "access_options": [
+            {
+              "id": "kubectl-jp-context",
+              "label": "List pods",
+              "command": "kubectl --context demo-jp-tokyo -n platform get pods",
+              "route": ["local-workstation", "kubeconfig", "kube-api", "k8s-jp-tokyo"],
+              "notes": "Mock command; context and namespace are explicit."
+            },
+            {
+              "id": "kubectl-jp-port-forward",
+              "label": "Port-forward service",
+              "command": "kubectl --context demo-jp-tokyo -n platform port-forward svc/demo-api 8080:80",
+              "route": ["local-workstation", "kubeconfig", "kube-api", "demo-api", "k8s-jp-tokyo"],
+              "notes": "Mock command; forwards a local port to a service."
+            },
+            {
+              "id": "kubectl-jp-exec",
+              "label": "Exec into pod",
+              "command": "kubectl --context demo-jp-tokyo -n platform exec -it deploy/demo-api -- sh",
+              "route": ["local-workstation", "kubeconfig", "kube-api", "demo-api", "k8s-jp-tokyo"],
+              "notes": "Mock command; opens a shell in a selected workload."
+            }
+          ]
+        },
+        {
+          "id": "helm",
+          "label": "Helm",
+          "binary": "helm",
+          "description": "Chart and release inspection against the Tokyo cluster context.",
+          "access_options": [
+            {
+              "id": "helm-jp-list",
+              "label": "List releases",
+              "command": "helm --kube-context demo-jp-tokyo -n platform list",
+              "route": ["local-workstation", "kubeconfig", "helm", "k8s-jp-tokyo"],
+              "notes": "Mock command; read-only release inventory."
+            },
+            {
+              "id": "helm-jp-status",
+              "label": "Release status",
+              "command": "helm --kube-context demo-jp-tokyo -n platform status demo-api",
+              "route": ["local-workstation", "kubeconfig", "helm", "demo-api", "k8s-jp-tokyo"],
+              "notes": "Mock command; inspect a named release."
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

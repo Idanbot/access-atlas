@@ -1,0 +1,4 @@
+/target/
+/target_local/
+*.log
+.DS_Store

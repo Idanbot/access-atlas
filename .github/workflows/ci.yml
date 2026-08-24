@@ -1,0 +1,27 @@
+name: Access Atlas CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Format, lint, test, and validate demo
+    runs-on: ubuntu-latest
+    container: rust:latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Install Rust quality components
+        run: rustup component add rustfmt clippy
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Run tests
+        run: cargo test --all-targets
+      - name: Validate demo JSON
+        run: cargo run --quiet -- --validate

@@ -469,21 +469,18 @@ fn render_access_vector(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
         ]));
     }
     if area.height >= 9 {
+        let description =
+            ellipsized_panel_text(&network.description, area.width.saturating_sub(10) as usize);
         lines.push(Line::from(vec![
             Span::styled("ABOUT   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                network.description.as_str(),
-                Style::default().fg(to_color(theme.hud_text)),
-            ),
+            Span::styled(description, Style::default().fg(to_color(theme.hud_text))),
         ]));
     }
     if area.height >= 9 {
+        let notes = ellipsized_panel_text(&option.notes, area.width.saturating_sub(10) as usize);
         lines.push(Line::from(vec![
             Span::styled("NOTE    ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                option.notes.as_str(),
-                Style::default().fg(to_color(theme.hud_text)),
-            ),
+            Span::styled(notes, Style::default().fg(to_color(theme.hud_text))),
         ]));
     }
     frame.render_widget(
@@ -499,11 +496,12 @@ fn render_inspection(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePale
     let start = selected
         .saturating_sub(visible_rows.saturating_sub(1) / 2)
         .min(details.len().saturating_sub(visible_rows));
-    let label_width = match area.width {
+    let label_width: usize = match area.width {
         0..=35 => 11,
         36..=46 => 14,
         _ => 17,
     };
+    let value_width = area.width.saturating_sub(label_width as u16 + 5) as usize;
     let lines = details
         .iter()
         .enumerate()
@@ -513,6 +511,7 @@ fn render_inspection(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePale
             let is_selected = index == selected;
             let marker = if is_selected { "›" } else { " " };
             let label = compact_detail_label(&row.label, label_width);
+            let value = ellipsized_panel_text(&row.value, value_width);
             let value_style = if is_selected {
                 Style::default()
                     .fg(to_color(theme.active_target))
@@ -529,7 +528,7 @@ fn render_inspection(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePale
                         Style::default().fg(Color::DarkGray)
                     },
                 ),
-                Span::styled(row.value.as_str(), value_style),
+                Span::styled(value, value_style),
             ])
         })
         .collect::<Vec<_>>();
@@ -661,6 +660,13 @@ fn wrap_text_for_panel(text: &str, width: usize, max_lines: usize) -> Vec<String
         remaining = remaining[split..].trim_start();
     }
     lines
+}
+
+fn ellipsized_panel_text(text: &str, width: usize) -> String {
+    wrap_text_for_panel(text, width, 1)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 fn format_uptime_short(seconds: u64) -> String {
@@ -1762,6 +1768,14 @@ mod tests {
             assert!(compact.contains(expected), "compact deck lost {expected:?}");
         }
         assert!(!compact.contains("42msPALETTE"));
+        let compact_location = compact
+            .lines()
+            .find(|line| line.contains("location"))
+            .expect("compact inspection should include location");
+        assert!(
+            compact_location.contains("Amsterdam, NL (Eu…"),
+            "compact detail value should signal truncation: {compact_location}"
+        );
 
         let standard = render_text(120, 40);
         for expected in [
@@ -1774,6 +1788,16 @@ mod tests {
             assert!(
                 standard.contains(expected),
                 "standard deck lost {expected:?}"
+            );
+        }
+        for label in ["ABOUT", "NOTE"] {
+            let line = standard
+                .lines()
+                .find(|line| line.contains(label))
+                .unwrap_or_else(|| panic!("standard deck should include {label}"));
+            assert!(
+                line.contains('…'),
+                "{label} should signal bounded truncation: {line}"
             );
         }
     }
@@ -1848,6 +1872,8 @@ mod tests {
             ["local-workstation →", "gcp-iap → target"]
         );
         assert_eq!(wrap_text_for_panel("abcdefghijk", 5, 2), ["abcde", "fghi…"]);
+        assert_eq!(ellipsized_panel_text("abcdefghijk", 5), "abcd…");
+        assert_eq!(ellipsized_panel_text("short", 5), "short");
     }
 
     #[test]

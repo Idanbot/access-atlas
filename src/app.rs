@@ -1,9 +1,11 @@
 use crate::model::{AccessOption, DetailRow, NetworkType, Target, Topology};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
     f64::consts::{PI, TAU},
     time::Duration,
 };
+
+const AMBIENT_FRAME_MS: u128 = 160;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ThemeId {
@@ -28,7 +30,7 @@ impl ThemeId {
 
     pub fn name(self) -> &'static str {
         match self {
-            Self::CyberOrbital => "Cyber Orbital",
+            Self::CyberOrbital => "Orbital Ice",
             Self::TacticalRadar => "Tactical Radar (P31)",
             Self::MinimalAtlas => "Minimal Slate Atlas",
             Self::AmberCrt => "Amber CRT Phosphor",
@@ -57,6 +59,7 @@ pub struct App {
     detail_index: usize,
     elapsed: Duration,
     continuous_time: Duration,
+    route_elapsed: Duration,
     route_progress: f32,
     rotation: f64,
     focus_rotation: f64,
@@ -88,6 +91,7 @@ impl App {
             detail_index: 0,
             elapsed: Duration::ZERO,
             continuous_time: Duration::ZERO,
+            route_elapsed: Duration::ZERO,
             route_progress: 0.0,
             rotation: focus_rotation,
             focus_rotation,
@@ -244,34 +248,40 @@ impl App {
 
     pub fn tick(&mut self, delta: Duration) {
         let was_animating = self.is_animating();
+        let ambient_frame = self.continuous_time.as_millis() / AMBIENT_FRAME_MS;
         self.continuous_time += delta;
         if !self.paused {
             self.elapsed += delta;
-            self.route_progress = (self.elapsed.as_secs_f32() / 2.0).min(1.0);
-            if self.elapsed >= Duration::from_secs(6) {
-                self.next_target();
-            }
         }
+
+        self.route_elapsed += delta;
+        let route_t = (self.route_elapsed.as_secs_f32() / 1.2).min(1.0);
+        self.route_progress = 1.0 - (1.0 - route_t).powi(3);
 
         if let Some(mut trans) = self.transition {
             trans.elapsed += delta;
             let t = (trans.elapsed.as_secs_f64() / trans.duration.as_secs_f64()).clamp(0.0, 1.0);
 
-            // Smooth cosine S-curve over 2 seconds
-            let s = 0.5 * (1.0 - (t * PI).cos());
-
-            // 1. Rotation and Pitch smoothly sweep towards target over 2s
+            // A fast lock acquisition followed by a gentle settle keeps target changes
+            // decisive without introducing a hard camera stop.
+            let s = smootherstep(t);
             let rot_delta = shortest_angle(trans.target_rotation - trans.start_rotation);
             self.rotation = trans.start_rotation + rot_delta * s;
-
             let pitch_delta = trans.target_pitch - trans.start_pitch;
             self.pitch = trans.start_pitch + pitch_delta * s;
 
-            // 2. Zoom: pull back (zoom out) during 1st second (t in [0.0, 0.5]),
-            // then zoom back in to target zoom during 2nd second (t in [0.5, 1.0])
-            let base_zoom = trans.start_zoom + (trans.target_zoom - trans.start_zoom) * s;
-            let zoom_dip = 0.35 * (t * PI).sin();
-            self.zoom = (base_zoom - zoom_dip).max(0.65);
+            // Pull back quickly to establish the route, coast briefly, then push into
+            // the destination as rotation settles. The three phases are continuous.
+            let overview_zoom = (trans.start_zoom.min(trans.target_zoom) * 0.68).max(0.68);
+            self.zoom = if t < 0.26 {
+                let pullback = 1.0 - (1.0 - t / 0.26).powi(3);
+                lerp(trans.start_zoom, overview_zoom, pullback)
+            } else if t < 0.42 {
+                overview_zoom
+            } else {
+                let push_in = smootherstep((t - 0.42) / 0.58);
+                lerp(overview_zoom, trans.target_zoom, push_in)
+            };
 
             if t >= 1.0 {
                 self.rotation = trans.target_rotation;
@@ -292,13 +302,33 @@ impl App {
             self.zoom = approach_value(self.zoom, self.focus_zoom, delta.as_secs_f64() * 0.8);
         }
 
+        if !self.paused && self.elapsed >= Duration::from_secs(6) {
+            // Begin the next acquisition on the following frame instead of applying
+            // this frame's entire delta to a transition that did not exist yet.
+            self.next_target();
+        }
+
         if was_animating || self.is_animating() {
+            self.dirty = true;
+        }
+        let next_ambient_frame = self.continuous_time.as_millis() / AMBIENT_FRAME_MS;
+        if !self.paused && next_ambient_frame != ambient_frame {
+            // Settled live mode only needs a ~6 Hz packet/countdown refresh. Camera
+            // and route acquisition continue to use the high-rate animation path.
             self.dirty = true;
         }
     }
 
     pub fn is_transitioning(&self) -> bool {
         self.transition.is_some()
+    }
+
+    pub fn handle_event(&mut self, event: Event) {
+        match event {
+            Event::Key(key) => self.handle_key(key),
+            Event::Resize(_, _) => self.dirty = true,
+            _ => {}
+        }
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
@@ -443,6 +473,7 @@ impl App {
         self.access_option_index = 0;
         self.detail_index = 0;
         self.elapsed = Duration::ZERO;
+        self.route_elapsed = Duration::ZERO;
         self.route_progress = 0.0;
         self.dirty = true;
     }
@@ -464,7 +495,7 @@ impl App {
             start_zoom: self.zoom,
             target_zoom,
             elapsed: Duration::ZERO,
-            duration: Duration::from_secs(2),
+            duration: Duration::from_millis(1_400),
         });
     }
 }
@@ -516,6 +547,15 @@ fn approach_value(current: f64, target: f64, max_step: f64) -> f64 {
         };
         current + step
     }
+}
+
+fn smootherstep(t: f64) -> f64 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+}
+
+fn lerp(start: f64, end: f64, amount: f64) -> f64 {
+    start + (end - start) * amount
 }
 
 fn shortest_angle(angle: f64) -> f64 {
@@ -615,6 +655,22 @@ mod tests {
     }
 
     #[test]
+    fn resize_events_invalidate_a_settled_frame_in_both_directions() {
+        let mut app = app();
+        app.tick(Duration::from_secs(2));
+        app.mark_rendered();
+        app.tick(Duration::from_secs(1));
+        assert!(!app.needs_render());
+
+        app.handle_event(Event::Resize(80, 24));
+        assert!(app.needs_render());
+        app.mark_rendered();
+
+        app.handle_event(Event::Resize(120, 40));
+        assert!(app.needs_render());
+    }
+
+    #[test]
     fn animation_completes_route_and_locks_target_heading() {
         let mut app = app();
         app.toggle_pause(); // Unpause for auto animation test
@@ -632,14 +688,13 @@ mod tests {
     }
 
     #[test]
-    fn steady_state_stops_animation_and_redraws_only_after_changes() {
+    fn held_mode_settles_then_stops_redrawing() {
         let mut app = app();
-        app.toggle_pause(); // Unpause for animation test
         assert!(app.needs_render());
         assert!(app.is_animating());
 
         app.mark_rendered();
-        app.tick(Duration::from_secs(3));
+        app.tick(Duration::from_secs(2));
         assert!(!app.is_animating());
         assert!(app.needs_render());
 
@@ -653,18 +708,44 @@ mod tests {
     }
 
     #[test]
-    fn camera_transition_zooms_out_at_1s_and_zooms_in_at_2s() {
+    fn live_mode_caps_ambient_redraws_at_six_hz() {
+        let mut app = app();
+        app.tick(Duration::from_secs(2));
+        app.mark_rendered();
+        app.toggle_pause();
+        app.mark_rendered();
+
+        app.tick(Duration::from_millis(50));
+        assert!(!app.needs_render(), "sub-frame tick should remain clean");
+        app.tick(Duration::from_millis(110));
+        assert!(app.needs_render(), "160 ms boundary should request a frame");
+    }
+
+    #[test]
+    fn camera_transition_pulls_back_coasts_then_locks_at_1_4s() {
         let mut app = app();
         app.next_target();
         let target_zoom = app.focus_zoom();
+        let initial_error = shortest_angle(app.focus_rotation() - app.rotation()).abs();
 
-        // At 1.0s (midpoint of 2s transition), zoom is pulled out for wide overview
-        app.tick(Duration::from_secs(1));
+        app.tick(Duration::from_millis(400));
         assert!(app.is_animating());
-        assert!(app.zoom() < target_zoom - 0.20);
+        let overview_zoom = app.zoom();
+        let acquisition_error = shortest_angle(app.focus_rotation() - app.rotation()).abs();
+        assert!(overview_zoom < target_zoom - 0.30);
+        assert!(acquisition_error < initial_error);
 
-        // At 2.0s, zoom has zoomed back in to target_zoom and camera is centered
-        app.tick(Duration::from_secs(1));
+        app.tick(Duration::from_millis(400));
+        assert!(
+            app.zoom() >= overview_zoom,
+            "push-in should follow the coast"
+        );
+        assert!(
+            shortest_angle(app.focus_rotation() - app.rotation()).abs() < acquisition_error,
+            "lock error should decrease monotonically"
+        );
+
+        app.tick(Duration::from_millis(600));
         assert!((app.zoom() - target_zoom).abs() < 0.001);
         assert!(shortest_angle(app.rotation() - app.focus_rotation()).abs() < 0.001);
         assert!((app.pitch() - app.focus_pitch()).abs() < 0.001);

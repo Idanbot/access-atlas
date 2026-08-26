@@ -2,7 +2,7 @@
 
 Access Atlas is a Rust terminal demo for visualizing machine and cloud access paths. Version 1 is deliberately read-only and fixture-driven: it does not contact cloud providers, run commands, authenticate, or read credentials.
 
-The demo renders a sparse Braille-dot globe with shaded sea, land, coast, and thin international-border colors. It locks the active target into view, centers its approximate city location, zooms to city scale, and animates a great-circle route only during target transitions. The selected target is the only city shown as a globe label. The right panel is populated from `data/demo-topology.json`, including provider metadata, city-level location provenance, network data, health, uptime, latency, and access commands.
+The demo renders a Braille-dot globe with shaded sea, land, coast, graticule, and thin international-border colors. Its Orbital Command Deck keeps the globe dominant while a three-part rail separates target health, the selected access vector, and the scrollable inspection index. It locks the active target into view, centers its approximate city location, and zooms to city scale. The selected target is the only city shown as a globe label. Every value in the command rail comes from `data/demo-topology.json`, including provider metadata, location provenance, network data, health, uptime, latency, and access commands.
 
 ## Run the demo
 
@@ -32,7 +32,7 @@ docker run --rm access-atlas:dev --validate
 | Key | Action |
 | --- | --- |
 | `Space` | Pause / resume automatic target cycling (paused by default) |
-| `t` | Cycle color theme (Tactical Radar, Minimal Atlas, Cyber Orbital, Amber CRT, Deep Space) |
+| `t` | Cycle color theme (Orbital Ice, Tactical Radar, Minimal Atlas, Amber CRT, Deep Space) |
 | `+` / `-` | Zoom camera in / out |
 | `h` / `j` / `k` / `l` | Manual pan / orbit camera in longitude and latitude |
 | `r` | Reset camera to focused target |
@@ -43,7 +43,7 @@ docker run --rm access-atlas:dev --validate
 | `Enter` | Reserved; currently does nothing |
 | `q` | Exit |
 
-Auto-cycle is paused by default for focused inspection (press `Space` to run). The route is animated along a subtle, thin 1-dot 3D parabolic great-circle arc with a traveling photon packet and fading tail from the local workstation origin to the active target. The active target features a clean circular reticle and expanding concentric radar beacon. The globe displays high-accuracy continent masks (0.5° sampling), clean dark oceans, atmospheric Rayleigh limb glow, world-space locked dithering, and live orbital telemetry badges.
+Auto-cycle is paused by default for focused inspection (press `Space` to run). A target change uses a 1.4-second pullback/coast/lock camera move while the great-circle uplink reveals beneath a traveling photon packet and fading tail. Acquisition finishes even when auto-cycle is held, allowing the renderer to become fully idle afterward. Live mode refreshes the settled packet and countdown at a restrained 6 Hz, while camera acquisition uses the faster animation cadence. The active target features a compact amber reticle and two phased lock rings. The globe displays high-accuracy continent masks (0.25° sampling), dark stippled oceans, an orbital graticule, atmospheric limb glow, and live camera telemetry.
 
 The data hierarchy is:
 

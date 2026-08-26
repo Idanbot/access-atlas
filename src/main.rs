@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use crossterm::{
     cursor::{Hide, Show},
-    event::{Event, poll, read},
+    event::{poll, read},
     execute,
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -120,10 +120,8 @@ fn event_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut A
         } else {
             std::time::Duration::from_millis(80)
         };
-        if poll(poll_timeout)?
-            && let Event::Key(key) = read()?
-        {
-            app.handle_key(key);
+        if poll(poll_timeout)? {
+            app.handle_event(read()?);
         }
         let now = Instant::now();
         app.tick(now.duration_since(last_tick));

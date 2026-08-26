@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Paragraph, Widget, Wrap},
+    widgets::{Block, BorderType, Paragraph, Widget},
 };
 
 const MASK_WIDTH: usize = 1440;
@@ -45,21 +45,21 @@ pub struct ThemePalette {
 pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
     match theme_id {
         ThemeId::CyberOrbital => ThemePalette {
-            name: "Cyber Orbital",
-            background: [4, 8, 16],
-            ocean: [12, 36, 60],
-            land: [42, 175, 110],
-            coast: [75, 230, 245],
-            border: [135, 230, 185],
-            atmosphere: [65, 175, 255],
-            active_target: [255, 225, 90],
-            other_target: [80, 195, 240],
-            origin: [255, 90, 210],
-            route: [255, 135, 55],
-            packet: [255, 255, 215],
-            hud_accent: [120, 220, 255],
-            hud_text: [160, 205, 235],
-            border_color: [40, 100, 145],
+            name: "Orbital Ice",
+            background: [3, 10, 16],
+            ocean: [10, 42, 54],
+            land: [28, 120, 134],
+            coast: [132, 232, 239],
+            border: [76, 164, 178],
+            atmosphere: [55, 177, 204],
+            active_target: [255, 190, 76],
+            other_target: [76, 189, 209],
+            origin: [180, 239, 244],
+            route: [48, 196, 219],
+            packet: [225, 252, 255],
+            hud_accent: [146, 232, 241],
+            hud_text: [125, 170, 183],
+            border_color: [28, 91, 108],
         },
         ThemeId::TacticalRadar => ThemePalette {
             name: "Tactical Radar (P31)",
@@ -134,199 +134,547 @@ pub fn get_theme(theme_id: ThemeId) -> ThemePalette {
 
 pub fn render(frame: &mut Frame, app: &App) {
     let theme = get_theme(app.theme());
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(to_color(theme.background))),
+        area,
+    );
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
 
+    let layout = deck_layout(area);
+    render_header(frame, layout.header, app, &theme);
+
+    let globe_block = deck_block("00 // ORBITAL VIEW", &theme);
+    let globe_area = globe_block.inner(layout.globe);
+    frame.render_widget(globe_block, layout.globe);
+    frame.render_widget(GlobeWidget { app, theme }, globe_area);
+
+    render_command_rail(frame, layout.rail, app, &theme);
+    render_footer(frame, layout.footer, &theme);
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DeckLayout {
+    header: Rect,
+    globe: Rect,
+    rail: Rect,
+    footer: Rect,
+}
+
+fn deck_layout(area: Rect) -> DeckLayout {
+    let compact = area.width < 100 || area.height < 30;
+    let header_height = if compact { 2 } else { 3 };
+    let footer_height = if compact { 2 } else { 3 };
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
+            Constraint::Length(header_height),
             Constraint::Min(0),
-            Constraint::Length(2),
+            Constraint::Length(footer_height),
         ])
-        .split(frame.area());
-    let main = Layout::default()
+        .split(area);
+
+    let desired_rail = match area.width {
+        0..=89 => 34,
+        90..=109 => 38,
+        110..=139 => 44,
+        _ => 52,
+    };
+    let rail_width = desired_rail.min(vertical[1].width.saturating_sub(32));
+    let gutter = u16::from(area.width >= 100);
+    let horizontal = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(66), Constraint::Percentage(34)])
+        .constraints([
+            Constraint::Min(0),
+            Constraint::Length(gutter),
+            Constraint::Length(rail_width),
+        ])
         .split(vertical[1]);
 
-    let target = app.target();
-    let network_type = app.current_network_type();
-    let option = app.current_access_option();
+    DeckLayout {
+        header: vertical[0],
+        globe: horizontal[0],
+        rail: horizontal[2],
+        footer: vertical[2],
+    }
+}
 
-    let platform = target.provider.to_uppercase();
-    let account = target
-        .metadata
-        .get("project_id")
-        .or_else(|| target.metadata.get("account"))
-        .or_else(|| target.metadata.get("cluster_name"))
-        .or_else(|| target.metadata.get("tailnet"))
-        .map(|s| s.as_str())
-        .unwrap_or(&target.location.region);
-    let vm_or_cluster = target
-        .metadata
-        .get("instance_id")
-        .or_else(|| target.metadata.get("machine_type"))
-        .or_else(|| target.metadata.get("node_id"))
-        .or_else(|| target.metadata.get("bastion_id"))
-        .map(|s| s.as_str())
-        .unwrap_or(&target.id);
+fn deck_block(title: &str, theme: &ThemePalette) -> Block<'static> {
+    Block::bordered()
+        .border_type(BorderType::Plain)
+        .title(Line::from(vec![
+            Span::styled(" ◇ ", Style::default().fg(to_color(theme.active_target))),
+            Span::styled(
+                title.to_owned(),
+                Style::default()
+                    .fg(to_color(theme.hud_accent))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ]))
+        .border_style(Style::default().fg(to_color(theme.border_color)))
+        .style(Style::default().bg(to_color(theme.background)))
+}
 
-    let target_title = format!(
-        " {} | {}, {} | target {}/{} | {} ",
-        target.label,
-        target.location.city,
-        target.location.country,
+fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let target_number = format!(
+        "LOCK {:02}/{:02}",
         app.target_index() + 1,
-        app.topology().targets.len(),
-        target.status.state
+        app.topology().targets.len()
     );
-
-    let status_indicator = if app.is_paused() {
-        " [PAUSED] "
+    let cycle_state = if app.is_paused() {
+        "AUTO HOLD"
     } else {
-        " [LIVE] "
+        "AUTO LIVE"
+    };
+    let title = if area.width < 92 {
+        " ACCESS ATLAS // ORBITAL CMD"
+    } else {
+        " ACCESS ATLAS // ORBITAL COMMAND DECK"
+    };
+    let right = format!("● {cycle_state}  ·  {target_number}");
+    let first = spaced_line(title, &right, area.width as usize);
+
+    let second = if area.width < 96 {
+        format!(
+            " MISSION {} // {}/{} // RTT {:.0}MS // {}",
+            app.topology().name,
+            app.target().location.city,
+            app.target().location.country,
+            app.target().status.latency_ms,
+            compact_palette_name(theme.name).to_uppercase()
+        )
+    } else {
+        let mission = format!(
+            " MISSION {}  ·  {} / {}  ·  RTT {:.0}ms",
+            app.topology().name,
+            app.target().location.city,
+            app.target().location.country,
+            app.target().status.latency_ms
+        );
+        let palette = format!("PALETTE {} ", theme.name.to_uppercase());
+        spaced_line(&mission, &palette, area.width as usize)
     };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                " ACCESS ATLAS ",
-                Style::default()
-                    .fg(to_color(theme.hud_accent))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                "Planetary Access Topology Demo",
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(
-                status_indicator,
-                Style::default()
-                    .fg(to_color(theme.active_target))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("Theme: {} ", theme.name),
-                Style::default().fg(to_color(theme.hud_text)),
-            ),
-        ])),
-        vertical[0],
-    );
-
-    let globe_title = format!(" Planetary Access Globe · [{}] ", theme.name);
-    let globe_block = Block::bordered()
-        .title(globe_title)
-        .border_style(Style::default().fg(to_color(theme.border_color)));
-    let globe_area = globe_block.inner(main[0]);
-    frame.render_widget(globe_block, main[0]);
-    frame.render_widget(GlobeWidget { app, theme }, globe_area);
-
-    let details = app.detail_rows();
     let mut lines = vec![
-        Line::from(vec![
-            Span::styled(
-                "TARGET: ",
-                Style::default()
-                    .fg(to_color(theme.hud_accent))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                &target.label,
-                Style::default()
-                    .fg(to_color(theme.active_target))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("Platform: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&platform, Style::default().fg(Color::Gray)),
-            Span::styled("  Account: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(account, Style::default().fg(Color::Gray)),
-        ]),
-        Line::from(vec![
-            Span::styled("Target: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(vm_or_cluster, Style::default().fg(Color::Gray)),
-            Span::styled("  Country: ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{} ({})", target.location.country, target.location.city),
-                Style::default().fg(Color::Gray),
-            ),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("network: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!(
-                    "{}/{} {}",
-                    app.network_type_index() + 1,
-                    target.network_types.len(),
-                    network_type.label
-                ),
-                Style::default().fg(to_color(theme.active_target)),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("binary: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                &network_type.binary,
-                Style::default().fg(to_color(theme.hud_accent)),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("option: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!(
-                    "{}/{} {}",
-                    app.access_option_index() + 1,
-                    network_type.access_options.len(),
-                    option.label
-                ),
-                Style::default().fg(to_color(theme.active_target)),
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled("command: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                &option.command,
-                Style::default().fg(to_color(theme.hud_accent)),
-            ),
-        ]),
-        Line::from(""),
-    ];
-    for (index, row) in details.iter().enumerate() {
-        let style = if index == app.detail_index() {
+        Line::from(vec![Span::styled(
+            first,
             Style::default()
                 .fg(to_color(theme.hud_accent))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{:>20} ", row.label),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(&row.value, style),
-        ]));
+                .add_modifier(Modifier::BOLD),
+        )]),
+        Line::styled(second, Style::default().fg(to_color(theme.hud_text))),
+    ];
+    if area.height > 2 {
+        lines.push(Line::styled(
+            "━".repeat(area.width as usize),
+            Style::default().fg(to_color(theme.border_color)),
+        ));
     }
     frame.render_widget(
         Paragraph::new(lines)
-            .block(
-                Block::bordered()
-                    .title(target_title)
-                    .border_style(Style::default().fg(to_color(theme.border_color))),
-            )
-            .wrap(Wrap { trim: false }),
-        main[1],
+            .style(Style::default().bg(scale_color_as_color(theme.background, theme.ocean))),
+        area,
     );
+}
 
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(" Space: Pause/Resume   t: Theme   h/j/k/l: Orbit   +/-: Zoom   r: Reset"),
-            Line::from(" Tab/Shift+Tab: Option   Left/Right: Target   Up/Down: Detail   q: Exit"),
+fn render_command_rail(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let status_height = if area.height <= 24 { 7 } else { 8 }.min(area.height);
+    let remaining = area.height.saturating_sub(status_height);
+    let access_height = match area.height {
+        0..=20 => 7,
+        21..=29 => 9,
+        _ => 11,
+    }
+    .min(remaining);
+    let panels = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(status_height),
+            Constraint::Length(access_height),
+            Constraint::Min(0),
         ])
-        .style(Style::default().fg(Color::DarkGray)),
-        vertical[2],
+        .split(area);
+
+    render_target_status(frame, panels[0], app, theme);
+    render_access_vector(frame, panels[1], app, theme);
+    render_inspection(frame, panels[2], app, theme);
+}
+
+fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    let target = app.target();
+    let health_style = if target.status.state.eq_ignore_ascii_case("healthy") {
+        Style::default().fg(to_color(theme.hud_accent))
+    } else {
+        Style::default()
+            .fg(to_color(theme.active_target))
+            .add_modifier(Modifier::BOLD)
+    };
+    let kind = target.kind.replace('_', " ").to_uppercase();
+    let latitude = if target.location.latitude >= 0.0 {
+        'N'
+    } else {
+        'S'
+    };
+    let longitude = if target.location.longitude >= 0.0 {
+        'E'
+    } else {
+        'W'
+    };
+    let metrics = if area.width < 40 {
+        format!(
+            "{:.0}ms RTT  ·  {:.1}%  ·  UP {}d",
+            target.status.latency_ms,
+            target.status.packet_loss_percent,
+            target.status.uptime_seconds / 86_400
+        )
+    } else {
+        format!(
+            "{:.0}ms RTT  ·  {:.1}% LOSS  ·  {}",
+            target.status.latency_ms,
+            target.status.packet_loss_percent,
+            format_uptime_short(target.status.uptime_seconds)
+        )
+    };
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("⌖ ", Style::default().fg(to_color(theme.active_target))),
+            Span::styled(
+                target.label.as_str(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("● ", health_style),
+            Span::styled(target.status.state.to_uppercase(), health_style),
+            Span::styled(
+                format!(
+                    "  ·  {} / {}",
+                    target.location.city, target.location.country
+                ),
+                Style::default().fg(to_color(theme.hud_text)),
+            ),
+        ]),
+        Line::styled(
+            format!("{}  ·  {kind}", target.provider.to_uppercase()),
+            Style::default().fg(to_color(theme.hud_text)),
+        ),
+        Line::styled(
+            format!(
+                "{:.2}°{latitude}  {:.2}°{longitude}",
+                target.location.latitude.abs(),
+                target.location.longitude.abs()
+            ),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Line::styled(metrics, Style::default().fg(to_color(theme.hud_text))),
+    ];
+    if area.height >= 8 {
+        lines.push(Line::from(vec![
+            Span::styled("CHECK  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                target.status.checked_at.as_str(),
+                Style::default().fg(to_color(theme.hud_text)),
+            ),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(deck_block("01 // TARGET LOCK", theme)),
+        area,
     );
+}
+
+fn render_access_vector(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    let target = app.target();
+    let network = app.current_network_type();
+    let option = app.current_access_option();
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled("NETWORK ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(
+                    "{:02}/{:02}  {}",
+                    app.network_type_index() + 1,
+                    target.network_types.len(),
+                    network.label.to_uppercase()
+                ),
+                Style::default()
+                    .fg(to_color(theme.hud_accent))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("$ ", Style::default().fg(to_color(theme.active_target))),
+            Span::styled(
+                network.binary.as_str(),
+                Style::default().fg(to_color(theme.hud_accent)),
+            ),
+        ]),
+        Line::from(vec![
+            Span::styled("OPTION  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!(
+                    "{:02}/{:02}  {}",
+                    app.access_option_index() + 1,
+                    network.access_options.len(),
+                    option.label
+                ),
+                Style::default()
+                    .fg(to_color(theme.active_target))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+    ];
+
+    let expanded = area.height >= 11;
+    let command = wrap_text_for_panel(
+        &option.command,
+        area.width.saturating_sub(4) as usize,
+        if expanded { 2 } else { 1 },
+    );
+    for (index, chunk) in command.into_iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                if index == 0 { "› " } else { "  " },
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(chunk, Style::default().fg(Color::White)),
+        ]));
+    }
+
+    let route = wrap_text_for_panel(
+        &option.route.join(" → "),
+        area.width.saturating_sub(10) as usize,
+        if expanded { 2 } else { 1 },
+    );
+    for (index, chunk) in route.into_iter().enumerate() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                if index == 0 { "ROUTE   " } else { "        " },
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::styled(chunk, Style::default().fg(to_color(theme.hud_text))),
+        ]));
+    }
+    if area.height >= 9 {
+        lines.push(Line::from(vec![
+            Span::styled("ABOUT   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                network.description.as_str(),
+                Style::default().fg(to_color(theme.hud_text)),
+            ),
+        ]));
+    }
+    if area.height >= 9 {
+        lines.push(Line::from(vec![
+            Span::styled("NOTE    ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                option.notes.as_str(),
+                Style::default().fg(to_color(theme.hud_text)),
+            ),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).block(deck_block("02 // ACCESS VECTOR [RO]", theme)),
+        area,
+    );
+}
+
+fn render_inspection(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    let details = app.detail_rows();
+    let visible_rows = area.height.saturating_sub(2) as usize;
+    let selected = app.detail_index().min(details.len().saturating_sub(1));
+    let start = selected
+        .saturating_sub(visible_rows.saturating_sub(1) / 2)
+        .min(details.len().saturating_sub(visible_rows));
+    let label_width = match area.width {
+        0..=35 => 11,
+        36..=46 => 14,
+        _ => 17,
+    };
+    let lines = details
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible_rows)
+        .map(|(index, row)| {
+            let is_selected = index == selected;
+            let marker = if is_selected { "›" } else { " " };
+            let label = compact_detail_label(&row.label, label_width);
+            let value_style = if is_selected {
+                Style::default()
+                    .fg(to_color(theme.active_target))
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(to_color(theme.hud_text))
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("{marker} {label:<label_width$} "),
+                    if is_selected {
+                        Style::default().fg(to_color(theme.active_target))
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
+                Span::styled(row.value.as_str(), value_style),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let title = format!("03 // INSPECTION  {:02}/{:02}", selected + 1, details.len());
+    frame.render_widget(Paragraph::new(lines).block(deck_block(&title, theme)), area);
+}
+
+fn render_footer(frame: &mut Frame, area: Rect, theme: &ThemePalette) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let mut lines = Vec::with_capacity(3);
+    if area.height > 2 {
+        lines.push(Line::styled(
+            "━".repeat(area.width as usize),
+            Style::default().fg(to_color(theme.border_color)),
+        ));
+    }
+    lines.push(Line::from(vec![
+        key_span("←/→", theme),
+        hint_span(" target  "),
+        key_span("Tab", theme),
+        hint_span(" access  "),
+        key_span("↑/↓", theme),
+        hint_span(" inspect  "),
+        key_span("Space", theme),
+        hint_span(" auto  "),
+        key_span("q", theme),
+        hint_span(" quit"),
+    ]));
+    if area.height > 1 {
+        lines.push(Line::from(vec![
+            key_span("h j k l", theme),
+            hint_span(" orbit  "),
+            key_span("+ / -", theme),
+            hint_span(" zoom  "),
+            key_span("r", theme),
+            hint_span(" recenter  "),
+            key_span("t", theme),
+            hint_span(" palette"),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(to_color(theme.background))),
+        area,
+    );
+}
+
+fn key_span(label: &'static str, theme: &ThemePalette) -> Span<'static> {
+    Span::styled(
+        format!(" {label} "),
+        Style::default()
+            .fg(to_color(theme.background))
+            .bg(to_color(theme.hud_text))
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn hint_span(label: &'static str) -> Span<'static> {
+    Span::styled(label, Style::default().fg(Color::DarkGray))
+}
+
+fn spaced_line(left: &str, right: &str, width: usize) -> String {
+    let used = left.chars().count() + right.chars().count();
+    format!("{left}{}{right}", " ".repeat(width.saturating_sub(used)))
+}
+
+fn compact_detail_label(label: &str, width: usize) -> String {
+    let compact = label
+        .strip_prefix("metadata.")
+        .or_else(|| label.strip_prefix("network."))
+        .or_else(|| label.strip_prefix("access."))
+        .unwrap_or(label);
+    if compact.chars().count() <= width {
+        compact.to_owned()
+    } else {
+        compact
+            .chars()
+            .take(width.saturating_sub(1))
+            .chain(['…'])
+            .collect()
+    }
+}
+
+fn compact_palette_name(name: &'static str) -> &'static str {
+    match name {
+        "Tactical Radar (P31)" => "Radar P31",
+        "Minimal Slate Atlas" => "Slate Atlas",
+        "Deep Space Nebula" => "Deep Space",
+        other => other,
+    }
+}
+
+fn wrap_text_for_panel(text: &str, width: usize, max_lines: usize) -> Vec<String> {
+    if width == 0 || max_lines == 0 {
+        return Vec::new();
+    }
+    let mut lines = Vec::with_capacity(max_lines);
+    let mut remaining = text.trim();
+    for line_index in 0..max_lines {
+        if remaining.is_empty() {
+            break;
+        }
+        if remaining.chars().count() <= width {
+            lines.push(remaining.to_owned());
+            break;
+        }
+        if line_index + 1 == max_lines {
+            let mut line = remaining
+                .chars()
+                .take(width.saturating_sub(1))
+                .collect::<String>();
+            line.push('…');
+            lines.push(line);
+            break;
+        }
+
+        let hard_end = remaining
+            .char_indices()
+            .nth(width)
+            .map_or(remaining.len(), |(index, _)| index);
+        let prefix = &remaining[..hard_end];
+        let split = prefix
+            .char_indices()
+            .rev()
+            .find(|(index, character)| *index > 0 && character.is_whitespace())
+            .map_or(hard_end, |(index, _)| index);
+        lines.push(remaining[..split].trim_end().to_owned());
+        remaining = remaining[split..].trim_start();
+    }
+    lines
+}
+
+fn format_uptime_short(seconds: u64) -> String {
+    let days = seconds / 86_400;
+    let hours = (seconds % 86_400) / 3_600;
+    format!("{days}d {hours:02}h UP")
+}
+
+fn scale_color_as_color(background: [u8; 3], tint: [u8; 3]) -> Color {
+    Color::Rgb(
+        ((u16::from(background[0]) * 3 + u16::from(tint[0])) / 4) as u8,
+        ((u16::from(background[1]) * 3 + u16::from(tint[1])) / 4) as u8,
+        ((u16::from(background[2]) * 3 + u16::from(tint[2])) / 4) as u8,
+    )
 }
 
 struct GlobeWidget<'a> {
@@ -396,10 +744,10 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
     let pixel_width = area.width as usize * 2;
     let pixel_height = area.height as usize * 4;
     let geometry = GlobeGeometry {
-        center_x: pixel_width as f64 / 2.0,
-        center_y: pixel_height as f64 / 2.0,
-        radius_x: (pixel_width as f64 * 0.43 * app.zoom()).max(1.0),
-        radius_y: (pixel_height as f64 * 0.43 * app.zoom()).max(1.0),
+        center_x: pixel_width as f64 * 0.46,
+        center_y: pixel_height as f64 * 0.51,
+        radius_x: (pixel_width as f64 * 0.365 * app.zoom()).max(1.0),
+        radius_y: (pixel_height as f64 * 0.365 * app.zoom()).max(1.0),
         rotation: app.rotation(),
         pitch: app.pitch(),
         rotation_cos: app.rotation().cos(),
@@ -408,6 +756,7 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
         pitch_sin: app.pitch().sin(),
     };
     let (points, rings, segments) = build_overlays(app, &geometry, theme);
+    let overlay = rasterize_overlays(pixel_width, pixel_height, &points, &rings, &segments);
 
     for cell_y in 0..area.height as usize {
         for cell_x in 0..area.width as usize {
@@ -420,8 +769,7 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
             for (dot_x, dot_y, mask) in BRAILLE_DOTS {
                 let x = cell_x * 2 + dot_x;
                 let y = cell_y * 4 + dot_y;
-                if let Some(sample) = dot_sample(x, y, &geometry, &points, &rings, &segments, theme)
-                {
+                if let Some(sample) = dot_sample(x, y, pixel_width, &geometry, &overlay, theme) {
                     bits |= mask;
                     if sample.priority >= best_sample.priority {
                         best_sample = sample;
@@ -436,12 +784,9 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
                     .fg(to_color(best_sample.color))
                     .bg(to_color(theme.background))
             };
-            buf.set_string(
-                area.x + cell_x as u16,
-                area.y + cell_y as u16,
-                glyph.to_string(),
-                style,
-            );
+            let cell = &mut buf[(area.x + cell_x as u16, area.y + cell_y as u16)];
+            cell.set_char(glyph);
+            cell.set_style(style);
         }
     }
 
@@ -456,6 +801,9 @@ fn render_city_label(
     geometry: &GlobeGeometry,
     theme: &ThemePalette,
 ) {
+    if area.width < 24 || area.height < 9 {
+        return;
+    }
     let target = app.target();
     let point = geo_to_vec(target.location.latitude, target.location.longitude);
     let Some((x, y, _depth)) = project_vec_camera(
@@ -470,61 +818,50 @@ fn render_city_label(
         return;
     };
 
-    let platform = target.provider.to_uppercase();
-    let account = target
-        .metadata
-        .get("project_id")
-        .or_else(|| target.metadata.get("account"))
-        .or_else(|| target.metadata.get("cluster_name"))
-        .or_else(|| target.metadata.get("tailnet"))
-        .map(|s| s.as_str())
-        .unwrap_or(&target.location.region);
-    let vm_or_cluster = target
-        .metadata
-        .get("instance_id")
-        .or_else(|| target.metadata.get("machine_type"))
-        .or_else(|| target.metadata.get("node_id"))
-        .or_else(|| target.metadata.get("bastion_id"))
-        .map(|s| s.as_str())
-        .unwrap_or(&target.id);
-    let country = &target.location.country;
-
-    let label_title = format!(" ◉ {} ", target.label);
+    let label_title = format!("⌖ ── {}", target.label);
     let label_meta = format!(
-        "   {} ▏{} ▏{} ▏{} ",
-        platform.to_lowercase(),
-        account,
-        vm_or_cluster,
-        country
+        "   {} / {} · {}",
+        target.provider.to_uppercase(),
+        target.location.country,
+        target.location.region
     );
+    let point_x = area
+        .x
+        .saturating_add((x / 2.0).round().clamp(0.0, area.width as f64 - 1.0) as u16);
+    let point_y = area
+        .y
+        .saturating_add((y / 4.0).round().clamp(0.0, area.height as f64 - 1.0) as u16);
+    let title_width = label_title.chars().count().min(area.width as usize) as u16;
+    let right_start = point_x.saturating_add(2);
+    let draw_x = if right_start.saturating_add(title_width) < area.right() {
+        right_start
+    } else {
+        point_x
+            .saturating_sub(title_width.saturating_add(2))
+            .max(area.x)
+    };
+    let draw_y = point_y.clamp(area.y.saturating_add(3), area.bottom().saturating_sub(3));
 
-    let max_len = label_title.chars().count().max(label_meta.chars().count()) as i32;
-    let start_x = (x / 2.0).round() as i32 + 3;
-    let start_y = (y / 4.0).round() as i32;
-    let min_x = i32::from(area.x);
-    let max_x = i32::from(area.x + area.width).saturating_sub(max_len);
-    let draw_x = start_x.clamp(min_x, max_x.max(min_x));
-    let draw_y = start_y.clamp(
-        i32::from(area.y),
-        i32::from(area.bottom().saturating_sub(2)),
-    );
-
-    buf.set_string(
-        draw_x as u16,
-        draw_y as u16,
-        label_title,
+    draw_clipped(
+        buf,
+        area,
+        draw_x,
+        draw_y,
+        &label_title,
         Style::default()
             .fg(to_color(theme.active_target))
             .bg(to_color(theme.background))
             .add_modifier(Modifier::BOLD),
     );
-    if (draw_y + 1) < area.bottom() as i32 {
-        buf.set_string(
-            draw_x as u16,
-            (draw_y + 1) as u16,
-            label_meta,
+    if area.width >= 64 && draw_y.saturating_add(1) < area.bottom() {
+        draw_clipped(
+            buf,
+            area,
+            draw_x,
+            draw_y + 1,
+            &label_meta,
             Style::default()
-                .fg(Color::DarkGray)
+                .fg(to_color(theme.hud_text))
                 .bg(to_color(theme.background)),
         );
     }
@@ -541,118 +878,107 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
     let lon_dir = if lon <= 180.0 { "E" } else { "W" };
     let lon_val = if lon <= 180.0 { lon } else { 360.0 - lon };
 
-    // Top-Left Telemetry Badge
-    let top_left = format!(
-        " LAT {:.1}°{} · LON {:.1}°{} · ▲ NORTH UP ",
-        lat.abs(),
-        lat_dir,
-        lon_val,
-        lon_dir
-    );
-    buf.set_string(
+    let top_left = if area.width < 62 {
+        format!(
+            "AZ {:05.1}°{} · EL {:04.1}°{} · {:.2}×",
+            lon_val,
+            lon_dir,
+            lat.abs(),
+            lat_dir,
+            app.zoom()
+        )
+    } else {
+        format!(
+            "CAM // AZ {:05.1}°{} · EL {:04.1}°{} · ZOOM {:.2}×",
+            lon_val,
+            lon_dir,
+            lat.abs(),
+            lat_dir,
+            app.zoom()
+        )
+    };
+    draw_clipped(
+        buf,
+        area,
         area.x + 1,
         area.y + 1,
-        top_left,
+        &top_left,
         Style::default()
             .fg(to_color(theme.hud_accent))
             .bg(to_color(theme.background)),
     );
 
-    // Top-Right Telemetry Badge
-    let top_right = format!(" ZOOM {:.2}x · {} ", app.zoom(), theme.name);
+    let top_right = format!("NORTH // {}", theme.name.to_uppercase());
     let top_right_len = top_right.chars().count() as u16;
-    if area.width > top_right_len + 4 {
-        buf.set_string(
+    if area.width > top_left.chars().count() as u16 + top_right_len + 5 {
+        draw_clipped(
+            buf,
+            area,
             area.right().saturating_sub(top_right_len + 1),
             area.y + 1,
-            top_right,
+            &top_right,
             Style::default()
                 .fg(to_color(theme.hud_text))
                 .bg(to_color(theme.background)),
         );
     }
 
-    // Bottom-Left Target Lock Information Box
-    let target = app.target();
-    let platform = target.provider.to_uppercase();
-    let account = target
-        .metadata
-        .get("project_id")
-        .or_else(|| target.metadata.get("account"))
-        .or_else(|| target.metadata.get("cluster_name"))
-        .or_else(|| target.metadata.get("tailnet"))
-        .map(|s| s.as_str())
-        .unwrap_or(&target.location.region);
-    let vm_or_cluster = target
-        .metadata
-        .get("instance_id")
-        .or_else(|| target.metadata.get("machine_type"))
-        .or_else(|| target.metadata.get("node_id"))
-        .or_else(|| target.metadata.get("bastion_id"))
-        .map(|s| s.as_str())
-        .unwrap_or(&target.id);
-    let country = &target.location.country;
-
-    let bot_left_title = format!(" ⌖ LOCK: {} ", target.label);
-    let bot_left_meta = format!(
-        "   {} ▏{} ▏{} ▏{} ({}) ",
-        platform.to_lowercase(),
-        account,
-        vm_or_cluster,
-        country,
-        target.location.city
+    let filled = (app.route_progress() * 8.0).round() as usize;
+    let route_meter = format!(
+        "UPLINK [{}{}] {:03}%",
+        "■".repeat(filled.min(8)),
+        "·".repeat(8_usize.saturating_sub(filled)),
+        (app.route_progress() * 100.0).round() as u8
     );
-
-    if area.height > 3 {
-        buf.set_string(
-            area.x + 1,
-            area.bottom().saturating_sub(3),
-            bot_left_title,
-            Style::default()
-                .fg(to_color(theme.active_target))
-                .bg(to_color(theme.background))
-                .add_modifier(Modifier::BOLD),
-        );
-        buf.set_string(
-            area.x + 1,
-            area.bottom().saturating_sub(2),
-            bot_left_meta,
-            Style::default()
-                .fg(Color::DarkGray)
-                .bg(to_color(theme.background)),
-        );
-    } else if area.height > 2 {
-        buf.set_string(
-            area.x + 1,
-            area.bottom().saturating_sub(2),
-            bot_left_title,
-            Style::default()
-                .fg(to_color(theme.active_target))
-                .bg(to_color(theme.background))
-                .add_modifier(Modifier::BOLD),
-        );
-    }
-
-    // Bottom-Right Mode Badge
     let bot_right = if app.is_paused() {
-        " [AUTO-CYCLE: PAUSED (Space to run)] ".to_owned()
+        "AUTO // HOLD".to_owned()
     } else {
         format!(
-            " AUTO-CYCLE: LIVE ({:.0}s) ",
+            "AUTO // LIVE {:03.1}s",
             (6.0 - app.elapsed().as_secs_f64()).max(0.0)
         )
     };
     let bot_right_len = bot_right.chars().count() as u16;
-    if area.width > bot_right_len + 4 && area.height > 2 {
-        buf.set_string(
+    let bottom_y = area.bottom().saturating_sub(2);
+    draw_clipped(
+        buf,
+        area,
+        area.x + 1,
+        bottom_y,
+        &route_meter,
+        Style::default()
+            .fg(to_color(theme.route))
+            .bg(to_color(theme.background)),
+    );
+    if area.width > route_meter.chars().count() as u16 + bot_right_len + 4 {
+        draw_clipped(
+            buf,
+            area,
             area.right().saturating_sub(bot_right_len + 1),
-            area.bottom().saturating_sub(2),
-            bot_right,
+            bottom_y,
+            &bot_right,
             Style::default()
-                .fg(to_color(theme.hud_text))
+                .fg(if app.is_paused() {
+                    to_color(theme.hud_text)
+                } else {
+                    to_color(theme.hud_accent)
+                })
                 .bg(to_color(theme.background)),
         );
     }
+}
+
+fn draw_clipped(buf: &mut Buffer, area: Rect, x: u16, y: u16, content: &str, style: Style) {
+    if x < area.x || x >= area.right() || y < area.y || y >= area.bottom() {
+        return;
+    }
+    buf.set_stringn(
+        x,
+        y,
+        content,
+        area.right().saturating_sub(x) as usize,
+        style,
+    );
 }
 
 fn build_overlays(
@@ -689,13 +1015,19 @@ fn build_overlays(
         });
     }
 
-    // 2. 3D Elevated Parabolic Great-Circle Route (Subtle thin 1-dot hairline)
+    // 2. Elevated great-circle uplink. During acquisition, the photon leads the
+    // reveal; after lock, it loops at a restrained ambient cadence.
     if app.route_progress() > 0.0 {
-        let steps = 60;
+        let steps = ((geometry.radius_x + geometry.radius_y) * 0.38)
+            .round()
+            .clamp(36.0, 72.0) as usize;
         let visible_steps = (steps as f32 * app.route_progress()).ceil() as usize;
-
-        let packet_phase = (app.continuous_time().as_secs_f64() * 0.85).fract();
-        let packet_step = (packet_phase * visible_steps.min(steps) as f64).round() as usize;
+        let packet_step = if app.route_progress() < 0.995 {
+            visible_steps.min(steps)
+        } else {
+            let packet_phase = (app.continuous_time().as_secs_f64() * 0.24).fract();
+            (packet_phase * steps as f64).round() as usize
+        };
 
         let destination = geo_to_vec(target.location.latitude, target.location.longitude);
         let mut prev_pt: Option<(f64, f64)> = None;
@@ -720,9 +1052,9 @@ fn build_overlays(
                         (theme.packet, 5)
                     } else if step < packet_step && packet_step - step <= 4 {
                         let tail_fade = 1.0 - (packet_step - step) as f64 / 4.0;
-                        (scale_color(theme.packet, tail_fade * 0.85 + 0.15), 3)
+                        (scale_color(theme.packet, tail_fade * 0.75 + 0.16), 3)
                     } else {
-                        (theme.route, 2)
+                        (scale_color(theme.route, 0.76), 2)
                     };
 
                     segments.push(RouteSegment {
@@ -779,12 +1111,12 @@ fn build_overlays(
                     priority: 4,
                 });
 
-                // Subtle phased concentric sonar rings that expand and smoothly disappear
+                // Two phased lock rings establish focus without overwhelming the map.
                 let t = app.continuous_time().as_secs_f64();
-                for offset in [0.0, 0.5] {
-                    let phase = ((t * 0.70) + offset).fract();
-                    let radius = 1.2 + phase * 3.6;
-                    let fade = (1.0 - phase).powf(1.8) * 0.85;
+                for offset in [0.0, 0.52] {
+                    let phase = ((t * 0.82) + offset).fract();
+                    let radius = 1.3 + phase * 4.2;
+                    let fade = smoother_fade(phase) * 0.82;
                     if fade > 0.04 {
                         rings.push(RingMarker {
                             x,
@@ -813,58 +1145,15 @@ fn build_overlays(
 fn dot_sample(
     x: usize,
     y: usize,
+    pixel_width: usize,
     geometry: &GlobeGeometry,
-    points: &[PointMarker],
-    rings: &[RingMarker],
-    segments: &[RouteSegment],
+    overlay: &[Option<DotSample>],
     theme: &ThemePalette,
 ) -> Option<DotSample> {
     let screen_x = x as f64 + 0.5;
     let screen_y = y as f64 + 0.5;
 
-    let mut best_overlay: Option<DotSample> = None;
-
-    // Check point markers (center bullseye, photon packet, origin)
-    for p in points {
-        let dist_sq = (screen_x - p.x).powi(2) + (screen_y - p.y).powi(2);
-        if dist_sq <= p.radius_sq {
-            let sample = DotSample {
-                color: p.color,
-                priority: p.priority,
-            };
-            if best_overlay.is_none_or(|b| sample.priority >= b.priority) {
-                best_overlay = Some(sample);
-            }
-        }
-    }
-
-    // Check circular reticle rings
-    for r in rings {
-        let dist = (screen_x - r.x).hypot(screen_y - r.y);
-        if (dist - r.radius).abs() <= 0.46 {
-            let sample = DotSample {
-                color: r.color,
-                priority: r.priority,
-            };
-            if best_overlay.is_none_or(|b| sample.priority >= b.priority) {
-                best_overlay = Some(sample);
-            }
-        }
-    }
-
-    // Check thin 1-dot hairline route line segments
-    for seg in segments {
-        let d_sq = dist_to_segment_squared(screen_x, screen_y, seg.x1, seg.y1, seg.x2, seg.y2);
-        if d_sq <= 0.26 {
-            let sample = DotSample {
-                color: seg.color,
-                priority: seg.priority,
-            };
-            if best_overlay.is_none_or(|b| sample.priority >= b.priority) {
-                best_overlay = Some(sample);
-            }
-        }
-    }
+    let best_overlay = overlay[y * pixel_width + x];
 
     if let Some(top) = best_overlay
         && top.priority >= 3
@@ -927,6 +1216,21 @@ fn dot_sample(
             return Some(top);
         }
 
+        let graticule =
+            distance_to_grid(latitude, 15.0) < 0.16 || distance_to_grid(longitude, 15.0) < 0.16;
+        let density = if graticule { 0.58 } else { 0.055 };
+        if world_stipple(latitude, longitude) < density {
+            let ocean_color = if graticule {
+                scale_color(theme.border, brightness * 0.34)
+            } else {
+                scale_color(theme.ocean, brightness * 0.82)
+            };
+            return Some(DotSample {
+                color: ocean_color,
+                priority: 1,
+            });
+        }
+
         return None;
     }
 
@@ -943,6 +1247,138 @@ fn dot_sample(
     }
 
     best_overlay
+}
+
+fn rasterize_overlays(
+    width: usize,
+    height: usize,
+    points: &[PointMarker],
+    rings: &[RingMarker],
+    segments: &[RouteSegment],
+) -> Vec<Option<DotSample>> {
+    let mut raster = vec![None; width.saturating_mul(height)];
+    if width == 0 || height == 0 {
+        return raster;
+    }
+
+    for point in points {
+        let radius = point.radius_sq.sqrt() + 0.5;
+        for_each_pixel_in_bounds(width, height, point.x, point.y, radius, |x, y| {
+            let dx = x as f64 + 0.5 - point.x;
+            let dy = y as f64 + 0.5 - point.y;
+            if dx * dx + dy * dy <= point.radius_sq {
+                paint_overlay(
+                    &mut raster,
+                    width,
+                    x,
+                    y,
+                    DotSample {
+                        color: point.color,
+                        priority: point.priority,
+                    },
+                );
+            }
+        });
+    }
+
+    for ring in rings {
+        let outer_radius = ring.radius + 0.5;
+        for_each_pixel_in_bounds(width, height, ring.x, ring.y, outer_radius, |x, y| {
+            let distance = (x as f64 + 0.5 - ring.x).hypot(y as f64 + 0.5 - ring.y);
+            if (distance - ring.radius).abs() <= 0.46 {
+                paint_overlay(
+                    &mut raster,
+                    width,
+                    x,
+                    y,
+                    DotSample {
+                        color: ring.color,
+                        priority: ring.priority,
+                    },
+                );
+            }
+        });
+    }
+
+    for segment in segments {
+        let min_x = segment.x1.min(segment.x2);
+        let max_x = segment.x1.max(segment.x2);
+        let min_y = segment.y1.min(segment.y2);
+        let max_y = segment.y1.max(segment.y2);
+        let center_x = (min_x + max_x) * 0.5;
+        let center_y = (min_y + max_y) * 0.5;
+        let radius = ((max_x - min_x).max(max_y - min_y) * 0.5) + 1.0;
+        for_each_pixel_in_bounds(width, height, center_x, center_y, radius, |x, y| {
+            if (x as f64 + 0.5) < min_x - 0.6
+                || (x as f64 + 0.5) > max_x + 0.6
+                || (y as f64 + 0.5) < min_y - 0.6
+                || (y as f64 + 0.5) > max_y + 0.6
+            {
+                return;
+            }
+            let distance = dist_to_segment_squared(
+                x as f64 + 0.5,
+                y as f64 + 0.5,
+                segment.x1,
+                segment.y1,
+                segment.x2,
+                segment.y2,
+            );
+            if distance <= 0.26 {
+                paint_overlay(
+                    &mut raster,
+                    width,
+                    x,
+                    y,
+                    DotSample {
+                        color: segment.color,
+                        priority: segment.priority,
+                    },
+                );
+            }
+        });
+    }
+
+    raster
+}
+
+fn for_each_pixel_in_bounds(
+    width: usize,
+    height: usize,
+    center_x: f64,
+    center_y: f64,
+    radius: f64,
+    mut draw: impl FnMut(usize, usize),
+) {
+    let min_x = (center_x - radius).floor().max(0.0) as usize;
+    let max_x = (center_x + radius).ceil().min((width - 1) as f64) as usize;
+    let min_y = (center_y - radius).floor().max(0.0) as usize;
+    let max_y = (center_y + radius).ceil().min((height - 1) as f64) as usize;
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            draw(x, y);
+        }
+    }
+}
+
+fn paint_overlay(
+    raster: &mut [Option<DotSample>],
+    width: usize,
+    x: usize,
+    y: usize,
+    sample: DotSample,
+) {
+    let current = &mut raster[y * width + x];
+    if current.is_none_or(|value| sample.priority >= value.priority) {
+        *current = Some(sample);
+    }
+}
+
+fn distance_to_grid(value: f64, spacing: f64) -> f64 {
+    (value - (value / spacing).round() * spacing).abs()
 }
 
 fn dist_to_segment_squared(px: f64, py: f64, x1: f64, y1: f64, x2: f64, y2: f64) -> f64 {
@@ -1062,6 +1498,11 @@ fn scale_color(color: [u8; 3], brightness: f64) -> [u8; 3] {
     ]
 }
 
+fn smoother_fade(phase: f64) -> f64 {
+    let remaining = (1.0 - phase).clamp(0.0, 1.0);
+    remaining * remaining * (3.0 - 2.0 * remaining)
+}
+
 fn to_color(rgb: [u8; 3]) -> Color {
     Color::Rgb(rgb[0], rgb[1], rgb[2])
 }
@@ -1069,6 +1510,36 @@ fn to_color(rgb: [u8; 3]) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::Event;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    const FIXTURE: &str = include_str!("../data/demo-topology.json");
+
+    fn test_app() -> App {
+        App::new(crate::model::Topology::from_json(FIXTURE).expect("fixture should parse"))
+    }
+
+    fn render_text(width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        let mut app = test_app();
+        app.tick(std::time::Duration::from_secs(2));
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("representative deck should render");
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        let mut output = String::new();
+        for y in buffer.area.top()..buffer.area.bottom() {
+            for x in buffer.area.left()..buffer.area.right() {
+                output.push_str(buffer[(x, y)].symbol());
+            }
+            output.push('\n');
+        }
+        output
+    }
 
     #[test]
     fn geographic_origin_is_on_unit_sphere() {
@@ -1181,10 +1652,7 @@ mod tests {
 
     #[test]
     fn active_target_generates_subtle_pulsing_rings() {
-        let topology =
-            crate::model::Topology::from_json(include_str!("../data/demo-topology.json"))
-                .expect("fixture should parse");
-        let app = App::new(topology);
+        let app = test_app();
         let theme = get_theme(ThemeId::CyberOrbital);
         let geometry = GlobeGeometry {
             center_x: 50.0,
@@ -1206,10 +1674,180 @@ mod tests {
         );
         for r in &rings {
             assert!(
-                r.radius >= 1.2 && r.radius <= 5.0,
+                r.radius >= 1.3 && r.radius <= 5.5,
                 "Ring radius within subtle bounds"
             );
         }
+    }
+
+    #[test]
+    fn route_reveal_keeps_packet_at_head_then_completes_path() {
+        let mut app = test_app();
+        app.tick(std::time::Duration::from_millis(400));
+        assert!((0.0..1.0).contains(&app.route_progress()));
+        let theme = get_theme(ThemeId::CyberOrbital);
+        let geometry = GlobeGeometry {
+            center_x: 80.0,
+            center_y: 50.0,
+            radius_x: 55.0,
+            radius_y: 42.0,
+            rotation: app.rotation(),
+            rotation_cos: app.rotation().cos(),
+            rotation_sin: app.rotation().sin(),
+            pitch: app.pitch(),
+            pitch_cos: app.pitch().cos(),
+            pitch_sin: app.pitch().sin(),
+        };
+        let (partial_points, _rings, partial_segments) = build_overlays(&app, &geometry, &theme);
+        assert!(!partial_segments.is_empty());
+        assert!(partial_points.iter().any(|point| point.priority == 5));
+
+        app.tick(std::time::Duration::from_secs(1));
+        assert_eq!(app.route_progress(), 1.0);
+        let (locked_points, _rings, locked_segments) = build_overlays(&app, &geometry, &theme);
+        assert!(locked_segments.len() >= partial_segments.len());
+        assert!(locked_points.iter().any(|point| point.priority == 5));
+    }
+
+    #[test]
+    fn command_deck_layout_preserves_globe_and_rail_at_target_sizes() {
+        let compact = deck_layout(Rect::new(0, 0, 80, 24));
+        assert_eq!(compact.header.height, 2);
+        assert_eq!(compact.footer.height, 2);
+        assert_eq!(compact.globe.width, 46);
+        assert_eq!(compact.rail.width, 34);
+        assert_eq!(compact.globe.right(), compact.rail.x);
+
+        let standard = deck_layout(Rect::new(0, 0, 120, 40));
+        assert_eq!(standard.header.height, 3);
+        assert_eq!(standard.footer.height, 3);
+        assert_eq!(standard.globe.width, 75);
+        assert_eq!(standard.rail.width, 44);
+        assert_eq!(standard.globe.right() + 1, standard.rail.x);
+
+        let wide = deck_layout(Rect::new(0, 0, 160, 50));
+        assert!(wide.globe.width > wide.rail.width * 2);
+        assert_eq!(wide.rail.width, 52);
+    }
+
+    #[test]
+    fn representative_terminal_sizes_render_all_command_modules() {
+        for (width, height) in [(80, 24), (100, 30), (120, 40), (160, 50)] {
+            let output = render_text(width, height);
+            for expected in [
+                "ACCESS ATLAS",
+                "00 // ORBITAL VIEW",
+                "01 // TARGET LOCK",
+                "02 // ACCESS VECTOR",
+                "03 // INSPECTION",
+                "Europe micro VM",
+            ] {
+                assert!(
+                    output.contains(expected),
+                    "{width}x{height} render should contain {expected:?}"
+                );
+            }
+            if std::env::var_os("ACCESS_ATLAS_DUMP").is_some() {
+                println!("\n--- {width}x{height} ---\n{output}");
+            }
+        }
+
+        let compact = render_text(80, 24);
+        for expected in [
+            "RTT 42MS // ORBITAL ICE",
+            "UP 14d",
+            "ROUTE   local-workstation",
+            "location    Amsterdam",
+        ] {
+            assert!(compact.contains(expected), "compact deck lost {expected:?}");
+        }
+        assert!(!compact.contains("42msPALETTE"));
+
+        let standard = render_text(120, 40);
+        for expected in [
+            "CHECK",
+            "ACCESS VECTOR [RO]",
+            "ABOUT",
+            "NOTE",
+            "packet_loss",
+        ] {
+            assert!(
+                standard.contains(expected),
+                "standard deck lost {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn settled_terminal_redraws_after_shrink_and_grow_events() {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("test terminal should initialize");
+        let mut app = test_app();
+        app.tick(std::time::Duration::from_secs(2));
+        terminal
+            .draw(|frame| render(frame, &app))
+            .expect("settled standard deck should render");
+        app.mark_rendered();
+        app.tick(std::time::Duration::from_secs(1));
+        assert!(!app.needs_render());
+
+        for (width, height) in [(80, 24), (120, 40)] {
+            terminal.backend_mut().resize(width, height);
+            app.handle_event(Event::Resize(width, height));
+            assert!(app.needs_render(), "resize should invalidate settled frame");
+            terminal
+                .draw(|frame| render(frame, &app))
+                .expect("resized deck should render");
+            app.mark_rendered();
+
+            let buffer = terminal.backend().buffer();
+            assert_eq!(buffer.area, Rect::new(0, 0, width, height));
+            let output = buffer_text(buffer);
+            for expected in [
+                "00 // ORBITAL VIEW",
+                "02 // ACCESS VECTOR",
+                "03 // INSPECTION",
+            ] {
+                assert!(
+                    output.contains(expected),
+                    "{width}x{height} redraw lost {expected:?}"
+                );
+            }
+            assert!(!app.needs_render());
+        }
+    }
+
+    #[test]
+    fn overlay_raster_keeps_highest_priority_sample() {
+        let points = [
+            PointMarker {
+                x: 4.5,
+                y: 4.5,
+                radius_sq: 2.0,
+                color: [10, 20, 30],
+                priority: 2,
+            },
+            PointMarker {
+                x: 4.5,
+                y: 4.5,
+                radius_sq: 1.0,
+                color: [220, 230, 240],
+                priority: 5,
+            },
+        ];
+        let raster = rasterize_overlays(10, 10, &points, &[], &[]);
+        let center = raster[4 * 10 + 4].expect("center should be painted");
+        assert_eq!(center.priority, 5);
+        assert_eq!(center.color, [220, 230, 240]);
+    }
+
+    #[test]
+    fn panel_wrapping_prefers_word_boundaries_and_marks_truncation() {
+        assert_eq!(
+            wrap_text_for_panel("local-workstation → gcp-iap → target", 20, 2),
+            ["local-workstation →", "gcp-iap → target"]
+        );
+        assert_eq!(wrap_text_for_panel("abcdefghijk", 5, 2), ["abcde", "fghi…"]);
     }
 
     #[test]
@@ -1223,6 +1861,7 @@ mod tests {
         ] {
             let palette = get_theme(theme_id);
             assert!(!palette.name.is_empty());
+            assert!(compact_palette_name(palette.name).chars().count() <= 11);
         }
     }
 }

@@ -1022,11 +1022,13 @@ fn build_overlays(
     }
 
     // 2. Elevated great-circle uplink. During acquisition, the photon leads the
-    // reveal; after lock, it loops at a restrained ambient cadence.
+    // reveal; after lock, it loops at a restrained ambient cadence. The sample
+    // budget follows the actual angular distance so the projected line stays
+    // faithful on both short local hops and long intercontinental arcs.
     if app.route_progress() > 0.0 {
-        let steps = ((geometry.radius_x + geometry.radius_y) * 0.38)
-            .round()
-            .clamp(36.0, 72.0) as usize;
+        let destination = geo_to_vec(target.location.latitude, target.location.longitude);
+        let arc_angle = origin.dot(destination).clamp(-1.0, 1.0).acos();
+        let steps = route_sample_count(arc_angle, geometry.radius_x, geometry.radius_y);
         let visible_steps = (steps as f32 * app.route_progress()).ceil() as usize;
         let packet_step = if app.route_progress() < 0.995 {
             visible_steps.min(steps)
@@ -1035,12 +1037,11 @@ fn build_overlays(
             (packet_phase * steps as f64).round() as usize
         };
 
-        let destination = geo_to_vec(target.location.latitude, target.location.longitude);
         let mut prev_pt: Option<(f64, f64)> = None;
 
         for step in 0..=visible_steps.min(steps) {
             let amount = step as f64 / steps as f64;
-            let sphere_point = interpolate_arc(origin, destination, amount);
+            let sphere_point = interpolate_arc_with_angle(origin, destination, amount, arc_angle);
             let altitude = (amount * std::f64::consts::PI).sin() * 0.16;
             let elevated_point = sphere_point * (1.0 + altitude);
 
@@ -1108,30 +1109,30 @@ fn build_overlays(
         ) {
             let active = index == app.target_index();
             if active {
-                // Subtle central target beacon dot
+                // A small, crisp center keeps the lock readable without
+                // obscuring the underlying map detail.
                 points.push(PointMarker {
                     x,
                     y,
-                    radius_sq: 1.0,
+                    radius_sq: 0.64,
                     color: theme.active_target,
                     priority: 4,
                 });
 
-                // Two phased lock rings establish focus without overwhelming the map.
+                // One restrained pulse gives the selected target a beacon-like
+                // cadence while keeping the reticle compact at terminal scale.
                 let t = app.continuous_time().as_secs_f64();
-                for offset in [0.0, 0.52] {
-                    let phase = ((t * 0.82) + offset).fract();
-                    let radius = 1.3 + phase * 4.2;
-                    let fade = smoother_fade(phase) * 0.82;
-                    if fade > 0.04 {
-                        rings.push(RingMarker {
-                            x,
-                            y,
-                            radius,
-                            color: scale_color(theme.active_target, fade),
-                            priority: 3,
-                        });
-                    }
+                let phase = (t * 0.72).fract();
+                let radius = 1.15 + phase * 2.35;
+                let fade = smoother_fade(phase) * 0.72;
+                if fade > 0.04 {
+                    rings.push(RingMarker {
+                        x,
+                        y,
+                        radius,
+                        color: scale_color(theme.active_target, fade),
+                        priority: 3,
+                    });
                 }
             } else {
                 points.push(PointMarker {
@@ -1370,6 +1371,13 @@ fn for_each_pixel_in_bounds(
     }
 }
 
+fn route_sample_count(arc_angle: f64, radius_x: f64, radius_y: f64) -> usize {
+    let projected_radius = (radius_x + radius_y) * 0.5;
+    (arc_angle * projected_radius * 0.68)
+        .ceil()
+        .clamp(48.0, 128.0) as usize
+}
+
 fn paint_overlay(
     raster: &mut [Option<DotSample>],
     width: usize,
@@ -1481,13 +1489,26 @@ fn mask_index(latitude: f64, longitude: f64) -> usize {
     y * MASK_WIDTH + x
 }
 
-fn interpolate_arc(start: DVec3, end: DVec3, amount: f64) -> DVec3 {
-    let cosine = start.dot(end).clamp(-1.0, 1.0);
-    let angle = cosine.acos();
+fn interpolate_arc_with_angle(start: DVec3, end: DVec3, amount: f64, angle: f64) -> DVec3 {
     if angle < 0.000_001 {
         return start.lerp(end, amount).normalize();
     }
     let sine = angle.sin();
+    if sine.abs() < 0.000_001 {
+        // Antipodal points have no unique shortest route. Pick a stable
+        // orthogonal great-circle plane instead of allowing a near-zero
+        // denominator to magnify floating-point error.
+        let basis = if start.x.abs() <= start.y.abs() && start.x.abs() <= start.z.abs() {
+            DVec3::X
+        } else if start.y.abs() <= start.z.abs() {
+            DVec3::Y
+        } else {
+            DVec3::Z
+        };
+        let orthogonal = start.cross(basis).normalize();
+        let theta = angle * amount;
+        return (start * theta.cos() + orthogonal * theta.sin()).normalize();
+    }
     (start * ((1.0 - amount) * angle).sin() / sine + end * (amount * angle).sin() / sine)
         .normalize()
 }
@@ -1628,7 +1649,9 @@ mod tests {
 
     #[test]
     fn arc_interpolation_stays_on_unit_sphere() {
-        let point = interpolate_arc(geo_to_vec(0.0, 0.0), geo_to_vec(0.0, 90.0), 0.5);
+        let start = geo_to_vec(0.0, 0.0);
+        let end = geo_to_vec(0.0, 90.0);
+        let point = interpolate_arc_with_angle(start, end, 0.5, start.dot(end).acos());
         assert!((point.length() - 1.0).abs() < 0.000_001);
         assert!((point.x - point.z).abs() < 0.000_001);
     }
@@ -1657,7 +1680,7 @@ mod tests {
     }
 
     #[test]
-    fn active_target_generates_subtle_pulsing_rings() {
+    fn active_target_generates_compact_pulsing_beacon() {
         let app = test_app();
         let theme = get_theme(ThemeId::CyberOrbital);
         let geometry = GlobeGeometry {
@@ -1673,17 +1696,34 @@ mod tests {
             pitch_sin: app.pitch().sin(),
         };
 
-        let (_points, rings, _segments) = build_overlays(&app, &geometry, &theme);
-        assert!(
-            !rings.is_empty(),
-            "Active target should have subtle pulsing rings"
+        let (points, rings, _segments) = build_overlays(&app, &geometry, &theme);
+        assert_eq!(
+            rings.len(),
+            1,
+            "Active target should have one compact pulse"
         );
         for r in &rings {
             assert!(
-                r.radius >= 1.3 && r.radius <= 5.5,
-                "Ring radius within subtle bounds"
+                r.radius >= 1.15 && r.radius <= 3.5,
+                "Ring radius within compact bounds"
             );
         }
+        let active_point = points
+            .iter()
+            .find(|point| point.priority == 4 && point.color == theme.active_target)
+            .expect("active target should have a center point");
+        assert!(
+            active_point.radius_sq <= 0.64,
+            "active target center should remain subpixel-sized"
+        );
+    }
+
+    #[test]
+    fn route_sample_budget_scales_with_geodesic_distance() {
+        assert_eq!(route_sample_count(0.0, 50.0, 42.0), 48);
+        assert!(route_sample_count(1.0, 50.0, 42.0) >= 48);
+        assert!(route_sample_count(2.0, 50.0, 42.0) > route_sample_count(1.0, 50.0, 42.0));
+        assert_eq!(route_sample_count(std::f64::consts::PI, 200.0, 200.0), 128);
     }
 
     #[test]
@@ -1713,6 +1753,63 @@ mod tests {
         let (locked_points, _rings, locked_segments) = build_overlays(&app, &geometry, &theme);
         assert!(locked_segments.len() >= partial_segments.len());
         assert!(locked_points.iter().any(|point| point.priority == 5));
+    }
+
+    #[test]
+    fn settled_route_starts_and_ends_at_projected_markers() {
+        let app = {
+            let mut app = test_app();
+            app.tick(std::time::Duration::from_secs(2));
+            app
+        };
+        let theme = get_theme(ThemeId::CyberOrbital);
+        let geometry = GlobeGeometry {
+            center_x: 80.0,
+            center_y: 50.0,
+            radius_x: 55.0,
+            radius_y: 42.0,
+            rotation: app.rotation(),
+            rotation_cos: app.rotation().cos(),
+            rotation_sin: app.rotation().sin(),
+            pitch: app.pitch(),
+            pitch_cos: app.pitch().cos(),
+            pitch_sin: app.pitch().sin(),
+        };
+        let (_, _, segments) = build_overlays(&app, &geometry, &theme);
+        let origin = geo_to_vec(
+            app.topology().origin.location.latitude,
+            app.topology().origin.location.longitude,
+        );
+        let destination = geo_to_vec(
+            app.target().location.latitude,
+            app.target().location.longitude,
+        );
+        let origin_screen = project_vec_camera(
+            origin,
+            geometry.rotation,
+            geometry.pitch,
+            geometry.center_x,
+            geometry.center_y,
+            geometry.radius_x,
+            geometry.radius_y,
+        )
+        .expect("origin should be visible in the focused Amsterdam view");
+        let destination_screen = project_vec_camera(
+            destination,
+            geometry.rotation,
+            geometry.pitch,
+            geometry.center_x,
+            geometry.center_y,
+            geometry.radius_x,
+            geometry.radius_y,
+        )
+        .expect("target should be visible in the focused view");
+        let first = segments
+            .first()
+            .expect("settled route should have segments");
+        let last = segments.last().expect("settled route should have a tail");
+        assert!((first.x1 - origin_screen.0).hypot(first.y1 - origin_screen.1) < 0.001);
+        assert!((last.x2 - destination_screen.0).hypot(last.y2 - destination_screen.1) < 0.001);
     }
 
     #[test]
@@ -1863,6 +1960,18 @@ mod tests {
         let center = raster[4 * 10 + 4].expect("center should be painted");
         assert_eq!(center.priority, 5);
         assert_eq!(center.color, [220, 230, 240]);
+    }
+
+    #[test]
+    fn antipodal_arc_interpolation_remains_finite() {
+        let start = DVec3::X;
+        let end = -DVec3::X;
+        let midpoint = interpolate_arc_with_angle(start, end, 0.5, std::f64::consts::PI);
+        assert!((midpoint.length() - 1.0).abs() < 0.000_001);
+        assert!(
+            (interpolate_arc_with_angle(start, end, 1.0, std::f64::consts::PI) - end).length()
+                < 0.000_001
+        );
     }
 
     #[test]

@@ -43,7 +43,7 @@ docker run --rm access-atlas:dev --validate
 | `Enter` | Reserved; currently does nothing |
 | `q` | Exit |
 
-Auto-cycle is paused by default for focused inspection (press `Space` to run). A target change uses a 1.4-second pullback/coast/lock camera move while the great-circle uplink reveals beneath a traveling photon packet and fading tail. Acquisition finishes even when auto-cycle is held, allowing the renderer to become fully idle afterward. Live mode refreshes the settled packet and countdown at a restrained 6 Hz, while camera acquisition uses the faster animation cadence. The active target features a compact amber reticle and two phased lock rings. The globe displays high-accuracy continent masks (0.25° sampling), dark stippled oceans, an orbital graticule, atmospheric limb glow, and live camera telemetry.
+Auto-cycle is paused by default for focused inspection (press `Space` to run). A target change uses a 1.4-second pullback/coast/lock camera move while the great-circle uplink reveals beneath a traveling photon packet and fading tail. Acquisition finishes even when auto-cycle is held, allowing the renderer to become fully idle afterward. Live mode refreshes the settled packet and countdown at a restrained 6 Hz, while camera acquisition uses the faster animation cadence. The active target features a small amber center beacon and a single restrained pulse ring. The uplink adapts its sampling to the source-to-target angular distance so long routes stay smooth without making local hops heavy. The globe displays high-accuracy continent masks (0.25° sampling), dark stippled oceans, an orbital graticule, atmospheric limb glow, and live camera telemetry.
 
 The data hierarchy is:
 

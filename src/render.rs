@@ -152,9 +152,11 @@ pub fn render(frame: &mut Frame, app: &App) {
     frame.render_widget(GlobeWidget { app, theme }, globe_area);
 
     render_command_rail(frame, layout.rail, app, &theme);
-    render_footer(frame, layout.footer, &theme);
+    render_footer(frame, layout.footer, app, &theme);
     if app.command_library_open() {
         render_command_library(frame, area, app, &theme);
+    } else if app.connection_browser_open() {
+        render_connection_browser(frame, area, app, &theme);
     }
 }
 
@@ -392,7 +394,14 @@ fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
             )
         } else {
             match app.refresh_state() {
-                RefreshState::Running => "RUNNING · provider scan queued".to_owned(),
+                RefreshState::Running => {
+                    let (completed, total) = app.refresh_progress();
+                    format!("RUNNING · {completed}/{total} providers")
+                }
+                RefreshState::Cancelling => "CANCELLING · current command may finish".to_owned(),
+                RefreshState::Cancelled { completed } => {
+                    format!("CANCELLED · {completed} providers finished")
+                }
                 _ => "CACHE · press R for online refresh".to_owned(),
             }
         };
@@ -493,7 +502,12 @@ fn render_access_vector(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
     if !app.extended_commands().is_empty() {
         let refresh = match app.refresh_state() {
             RefreshState::Idle => "R REFRESH".to_owned(),
-            RefreshState::Running => "REFRESHING…".to_owned(),
+            RefreshState::Running => {
+                let (completed, total) = app.refresh_progress();
+                format!("C CANCEL {completed}/{total}")
+            }
+            RefreshState::Cancelling => "CANCELLING…".to_owned(),
+            RefreshState::Cancelled { completed } => format!("R RETRY · {completed} DONE"),
             RefreshState::Complete { loaded, failed } => {
                 format!("R REFRESH {loaded} OK/{failed} ERR")
             }
@@ -615,6 +629,117 @@ fn render_command_library(frame: &mut Frame, area: Rect, app: &App, theme: &Them
     );
 }
 
+fn render_connection_browser(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    let connections = app.visible_connections();
+    let mut popup = centered_rect(area, 82, 100, 60, 1);
+    let desired_height = (7 + connections.len().min(12) as u16 * 2).max(12);
+    popup.height = desired_height.min(area.height);
+    popup.y = area.y + area.height.saturating_sub(popup.height) / 2;
+    frame.render_widget(Clear, popup);
+    let selected = app
+        .connection_browser_index()
+        .min(connections.len().saturating_sub(1));
+    let provider = app.connection_provider_filter().map_or_else(
+        || "ALL PROVIDERS".to_owned(),
+        |provider| provider.as_str().to_uppercase(),
+    );
+    let query = if app.connection_search_active() {
+        format!("/{}▌", app.connection_query())
+    } else if app.connection_query().is_empty() {
+        "/ to search".to_owned()
+    } else {
+        format!("/{}", app.connection_query())
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled("PROVIDER  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            provider,
+            Style::default()
+                .fg(to_color(theme.hud_accent))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   FILTER  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(query, Style::default().fg(to_color(theme.hud_accent))),
+        Span::styled(
+            format!("   {} MATCHES", connections.len()),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+
+    let row_budget = popup.height.saturating_sub(7) as usize;
+    let connection_budget = (row_budget / 2).max(1);
+    let start = selected
+        .saturating_sub(connection_budget.saturating_sub(1) / 2)
+        .min(connections.len().saturating_sub(connection_budget));
+    let mut previous_group = None;
+    for (index, connection) in connections
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(connection_budget)
+    {
+        let located = app.connection_is_located(connection);
+        let group = (located, connection.provider);
+        if previous_group != Some(group) {
+            lines.push(Line::styled(
+                format!(
+                    "── {} · {} ──",
+                    if located { "LOCATED" } else { "UNLOCATED" },
+                    connection.provider.as_str().to_uppercase()
+                ),
+                Style::default()
+                    .fg(to_color(theme.hud_accent))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            previous_group = Some(group);
+        }
+        let active = index == selected;
+        let style = if active {
+            Style::default()
+                .fg(to_color(theme.background))
+                .bg(to_color(theme.active_target))
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(to_color(theme.hud_text))
+        };
+        lines.push(Line::styled(
+            format!(
+                " {} {:<28}  {:<18}  {} ",
+                if active { "›" } else { " " },
+                ellipsized_panel_text(&connection.label, 28),
+                ellipsized_panel_text(&connection.kind, 18),
+                connection.provider.as_str()
+            ),
+            style,
+        ));
+    }
+    if connections.is_empty() {
+        lines.push(Line::styled(
+            "  No connections match this provider and search.",
+            Style::default().fg(to_color(theme.active_target)),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        key_span("Tab", theme),
+        hint_span(" provider  "),
+        key_span("↑/↓", theme),
+        hint_span(" select  "),
+        key_span("/", theme),
+        hint_span(" search  "),
+        key_span("Enter", theme),
+        hint_span(" focus  "),
+        key_span("Esc", theme),
+        hint_span(" close"),
+    ]));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(deck_block("05 // CONNECTION BROWSER", theme))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
 fn centered_rect(
     area: Rect,
     width_percent: u16,
@@ -683,7 +808,7 @@ fn render_inspection(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePale
     frame.render_widget(Paragraph::new(lines).block(deck_block(&title, theme)), area);
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, theme: &ThemePalette) {
+fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -701,13 +826,19 @@ fn render_footer(frame: &mut Frame, area: Rect, theme: &ThemePalette) {
         hint_span(" access  "),
         key_span("↑/↓", theme),
         hint_span(" inspect  "),
+        key_span("g", theme),
+        hint_span(if app.inventory().connections.is_empty() {
+            " connections (empty)  "
+        } else {
+            " connections  "
+        }),
         key_span("Space", theme),
         hint_span(" auto  "),
         key_span("q", theme),
         hint_span(" quit"),
     ]));
     if area.height > 1 {
-        lines.push(Line::from(vec![
+        let mut controls = vec![
             key_span("h j k l", theme),
             hint_span(" orbit  "),
             key_span("+ / -", theme),
@@ -715,8 +846,35 @@ fn render_footer(frame: &mut Frame, area: Rect, theme: &ThemePalette) {
             key_span("r", theme),
             hint_span(" recenter  "),
             key_span("t", theme),
-            hint_span(" palette"),
-        ]));
+            hint_span(" palette  "),
+        ];
+        match app.refresh_state() {
+            RefreshState::Running => {
+                let (completed, total) = app.refresh_progress();
+                controls.push(key_span("C", theme));
+                controls.push(Span::styled(
+                    format!(" cancel {completed}/{total}"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+            RefreshState::Cancelling => {
+                controls.push(Span::styled(
+                    " cancelling…",
+                    Style::default().fg(to_color(theme.active_target)),
+                ));
+            }
+            _ => {
+                controls.push(key_span("R", theme));
+                controls.push(hint_span(" refresh"));
+            }
+        }
+        if !app.refresh_notices().is_empty() {
+            controls.push(Span::styled(
+                format!("  !{} template notice(s)", app.refresh_notices().len()),
+                Style::default().fg(to_color(theme.active_target)),
+            ));
+        }
+        lines.push(Line::from(controls));
     }
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().bg(to_color(theme.background))),

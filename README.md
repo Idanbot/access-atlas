@@ -44,7 +44,11 @@ docker run --rm access-atlas:dev --validate
 | `/` | Search the open command library; `Esc` clears the search or closes it |
 | `y` | Copy the selected command through terminal OSC52; never execute it |
 | `R` | Explicitly query configured remote provider APIs |
+| `C` | Cancel a refresh after the currently running provider command returns |
+| `g` | Open the grouped connection browser |
 | `q` | Exit |
+
+Inside the connection browser, `Tab`/`Shift+Tab` cycle provider filters, `/` searches connection labels, kinds, and metadata, and `Enter` focuses the selected target. Located resources are grouped by provider; resources without reliable region metadata appear in explicit `UNLOCATED` sections rather than inheriting the origin's city.
 
 Auto-cycle is paused by default for focused inspection (press `Space` to run). A target change uses a 1.4-second pullback/coast/lock camera move while the great-circle uplink reveals beneath a traveling photon packet and fading tail. Acquisition finishes even when auto-cycle is held, allowing the renderer to become fully idle afterward. Live mode refreshes the settled packet and countdown at a restrained 6 Hz, while camera acquisition uses the faster animation cadence. The active target features a small amber center beacon and a single restrained pulse ring. The uplink adapts its sampling to the source-to-target angular distance so long routes stay smooth without making local hops heavy. The globe displays high-accuracy continent masks (0.25° sampling), dark stippled oceans, an orbital graticule, atmospheric limb glow, and live camera telemetry.
 
@@ -58,7 +62,7 @@ For example, the GCP target has an `SSH` network type with three options, while 
 
 ## Connection discovery
 
-At TUI startup, Access Atlas renders cached connections immediately and refreshes local metadata on a background thread. Press uppercase `R` for an explicit online refresh. Each source reports loaded, unavailable, or failed independently, so a missing or broken CLI does not discard successful providers.
+At TUI startup, Access Atlas renders a cache no older than 24 hours immediately and refreshes local metadata on a background thread. Press uppercase `R` for an explicit online refresh or `C` to cancel between providers. Progress and errors are reported per provider. `R` retries completed, cancelled, or failed refreshes. Successful scans authoritatively remove connections that disappeared; failed providers retain their last known cache entries. Stable connection IDs are deduplicated.
 
 Supported sources are:
 
@@ -84,6 +88,30 @@ cargo run -- --discover --online
 ```
 
 Use `--connections-cache PATH` to override the generated cache and `--discovery-home PATH` to test an isolated home. Defaults can also be set with `ACCESS_ATLAS_CACHE` and `ACCESS_ATLAS_HOME`. The cache is separate from `data/demo-topology.json`; discovery never mutates the authored topology.
+
+Set cache lifetime explicitly with `--cache-max-age-hours HOURS`; zero disables loading cached connections.
+
+### Non-executing acceptance audit
+
+Audit the actual locally configured providers and every generated template without executing any generated command:
+
+```sh
+cargo run -- --discover --audit-connections
+```
+
+The JSON result fails acceptance for duplicate IDs, malformed command sets, multi-line/control-character commands, unresolved override placeholders, or credential-shaped metadata. Missing tools and invalid overrides are warnings so independently working providers remain usable. Add `--online` only when you intentionally want read-only cloud inventory API calls; Access Atlas never creates, changes, starts, or deletes cloud resources.
+
+### Template overrides
+
+The default override path is `~/.config/access-atlas/templates.json`; use `--template-overrides PATH` to select another file. The schema is versioned and matches `provider` plus `resource_kind`. An override can replace a built-in command by `id`, or insert a new command at `position` 1–10. Metadata placeholders such as `{context}`, `{namespace}`, `{profile}`, and `{hostname}` are validated and shell-quoted before insertion. Invalid entries are ignored individually and the safe built-in remains active.
+
+Preview overrides through the normal discovery JSON or top-10 TUI library:
+
+```sh
+cargo run -- --discover --template-overrides docs/template-overrides.example.json
+```
+
+See [the complete example](docs/template-overrides.example.json).
 
 ## Demo data
 

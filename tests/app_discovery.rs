@@ -1,8 +1,8 @@
 use access_atlas::{
     app::{App, RefreshState, ThemeId},
     discovery::{
-        CommandRequest, CommandResult, CommandRunner, DiscoveryConfig, DiscoveryMode,
-        DiscoveryService,
+        CommandRequest, CommandResult, CommandRunner, DiscoveryConfig, DiscoveryEvent,
+        DiscoveryMode, DiscoveryService, Provider, SourceReport, SourceState,
     },
     model::Topology,
 };
@@ -126,6 +126,29 @@ fn uppercase_r_requests_online_refresh_once() {
     assert!(!app.take_refresh_request());
     app.mark_refresh_started();
     assert_eq!(app.refresh_state(), &RefreshState::Running);
+}
+
+#[test]
+fn refresh_progress_and_cancel_request_are_visible_to_the_event_loop() {
+    let mut app = discovered_app();
+    app.mark_refresh_started();
+    app.apply_discovery_event(DiscoveryEvent::Started { total: 9 });
+    app.apply_discovery_event(DiscoveryEvent::Source(SourceReport {
+        provider: Provider::Kubernetes,
+        state: SourceState::Loaded,
+        connections: 1,
+        message: "context loaded".to_owned(),
+    }));
+
+    assert_eq!(app.refresh_progress(), (1, 9));
+    assert_eq!(app.source_reports()[0].provider, Provider::Kubernetes);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert!(app.connection_browser_open());
+    app.handle_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));
+    assert!(app.take_cancel_request());
+    assert_eq!(app.refresh_state(), &RefreshState::Cancelling);
+    assert!(app.connection_browser_open());
 }
 
 #[test]

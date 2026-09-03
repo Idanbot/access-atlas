@@ -1,13 +1,13 @@
 use crate::{
     discovery::{
-        CommandTemplate, ConnectionInventory, DiscoveredConnection, RefreshReport, SourceReport,
-        SourceState,
+        CommandTemplate, ConnectionInventory, DiscoveredConnection, DiscoveryEvent, Provider,
+        RefreshReport, SourceReport, SourceState,
     },
     model::{AccessOption, DetailRow, Health, Location, NetworkType, Target, Topology},
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     f64::consts::{PI, TAU},
     time::Duration,
 };
@@ -63,6 +63,10 @@ pub enum RefreshState {
     #[default]
     Idle,
     Running,
+    Cancelling,
+    Cancelled {
+        completed: usize,
+    },
     Complete {
         loaded: usize,
         failed: usize,
@@ -98,8 +102,17 @@ pub struct App {
     command_library_index: usize,
     command_filter: String,
     command_search_active: bool,
+    connection_browser_open: bool,
+    connection_browser_index: usize,
+    connection_provider_filter: Option<Provider>,
+    connection_query: String,
+    connection_search_active: bool,
     refresh_requested: bool,
+    cancel_requested: bool,
     refresh_state: RefreshState,
+    refresh_completed: usize,
+    refresh_total: usize,
+    refresh_notices: Vec<String>,
     copy_request: Option<String>,
 }
 
@@ -115,8 +128,9 @@ impl App {
     pub fn with_inventory(
         mut topology: Topology,
         theme: ThemeId,
-        inventory: ConnectionInventory,
+        mut inventory: ConnectionInventory,
     ) -> Self {
+        inventory.deduplicate();
         let base_target_count = topology.targets.len();
         let fallback_location = topology.origin.location.clone();
         topology
@@ -155,8 +169,17 @@ impl App {
             command_library_index: 0,
             command_filter: String::new(),
             command_search_active: false,
+            connection_browser_open: false,
+            connection_browser_index: 0,
+            connection_provider_filter: None,
+            connection_query: String::new(),
+            connection_search_active: false,
             refresh_requested: false,
+            cancel_requested: false,
             refresh_state: RefreshState::Idle,
+            refresh_completed: 0,
+            refresh_total: 9,
+            refresh_notices: Vec::new(),
             copy_request: None,
         }
     }
@@ -230,8 +253,88 @@ impl App {
         self.command_library_index
     }
 
+    pub fn connection_browser_open(&self) -> bool {
+        self.connection_browser_open
+    }
+
+    pub fn connection_browser_index(&self) -> usize {
+        self.connection_browser_index
+    }
+
+    pub fn connection_provider_filter(&self) -> Option<Provider> {
+        self.connection_provider_filter
+    }
+
+    pub fn connection_query(&self) -> &str {
+        &self.connection_query
+    }
+
+    pub fn connection_search_active(&self) -> bool {
+        self.connection_search_active
+    }
+
+    pub fn visible_connections(&self) -> Vec<&DiscoveredConnection> {
+        let needle = self.connection_query.to_lowercase();
+        let mut connections = self
+            .inventory
+            .connections
+            .iter()
+            .filter(|connection| {
+                self.connection_provider_filter
+                    .is_none_or(|provider| connection.provider == provider)
+            })
+            .filter(|connection| {
+                needle.is_empty()
+                    || format!(
+                        "{} {} {} {}",
+                        connection.label,
+                        connection.provider.as_str(),
+                        connection.kind,
+                        connection
+                            .metadata
+                            .values()
+                            .cloned()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )
+                    .to_lowercase()
+                    .contains(&needle)
+            })
+            .collect::<Vec<_>>();
+        connections.sort_by(|left, right| {
+            (
+                !self.connection_is_located(left),
+                left.provider,
+                &left.label,
+            )
+                .cmp(&(
+                    !self.connection_is_located(right),
+                    right.provider,
+                    &right.label,
+                ))
+        });
+        connections
+    }
+
+    pub fn connection_is_located(&self, connection: &DiscoveredConnection) -> bool {
+        let target_id = format!("discovered:{}", connection.id);
+        self.topology
+            .targets
+            .iter()
+            .find(|target| target.id == target_id)
+            .is_some_and(|target| target.location.precision != "unknown")
+    }
+
     pub fn refresh_state(&self) -> &RefreshState {
         &self.refresh_state
+    }
+
+    pub fn refresh_progress(&self) -> (usize, usize) {
+        (self.refresh_completed, self.refresh_total)
+    }
+
+    pub fn refresh_notices(&self) -> &[String] {
+        &self.refresh_notices
     }
 
     pub fn take_refresh_request(&mut self) -> bool {
@@ -240,6 +343,41 @@ impl App {
 
     pub fn mark_refresh_started(&mut self) {
         self.refresh_state = RefreshState::Running;
+        self.refresh_completed = 0;
+        self.refresh_total = 9;
+        self.source_reports.clear();
+        self.refresh_notices.clear();
+        self.dirty = true;
+    }
+
+    pub fn apply_discovery_event(&mut self, event: DiscoveryEvent) {
+        match event {
+            DiscoveryEvent::Started { total } => {
+                self.refresh_total = total;
+                self.refresh_completed = 0;
+            }
+            DiscoveryEvent::Source(source) => {
+                if let Some(existing) = self
+                    .source_reports
+                    .iter_mut()
+                    .find(|existing| existing.provider == source.provider)
+                {
+                    *existing = source;
+                } else {
+                    self.source_reports.push(source);
+                }
+                self.refresh_completed = self.source_reports.len();
+            }
+            DiscoveryEvent::Finished {
+                completed,
+                cancelled,
+            } => {
+                self.refresh_completed = completed;
+                if cancelled {
+                    self.refresh_state = RefreshState::Cancelled { completed };
+                }
+            }
+        }
         self.dirty = true;
     }
 
@@ -250,6 +388,10 @@ impl App {
 
     pub fn take_copy_request(&mut self) -> Option<String> {
         self.copy_request.take()
+    }
+
+    pub fn take_cancel_request(&mut self) -> bool {
+        std::mem::take(&mut self.cancel_requested)
     }
 
     pub fn apply_refresh(&mut self, report: RefreshReport) {
@@ -264,12 +406,20 @@ impl App {
             .filter(|source| source.state == SourceState::Failed)
             .count();
         self.source_reports = report.sources;
+        self.refresh_notices = report.notices;
         self.apply_inventory(report.inventory);
-        self.refresh_state = RefreshState::Complete { loaded, failed };
+        self.refresh_state = if report.cancelled {
+            RefreshState::Cancelled {
+                completed: self.refresh_completed,
+            }
+        } else {
+            RefreshState::Complete { loaded, failed }
+        };
         self.dirty = true;
     }
 
-    pub fn apply_inventory(&mut self, inventory: ConnectionInventory) {
+    pub fn apply_inventory(&mut self, mut inventory: ConnectionInventory) {
+        inventory.deduplicate();
         let selected_id = self.target().id.clone();
         let fallback_location = self.topology.origin.location.clone();
         self.topology.targets.truncate(self.base_target_count);
@@ -289,6 +439,9 @@ impl App {
         self.command_library_index = 0;
         self.command_filter.clear();
         self.command_search_active = false;
+        self.connection_browser_index = self
+            .connection_browser_index
+            .min(self.visible_connections().len().saturating_sub(1));
         self.reset_target_animation();
         self.update_camera_focus();
     }
@@ -514,6 +667,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('C') && self.refresh_state == RefreshState::Running {
+            self.cancel_requested = true;
+            self.refresh_state = RefreshState::Cancelling;
+            self.dirty = true;
+            return;
+        }
         if self.command_library_open {
             match key.code {
                 KeyCode::Esc if self.command_search_active || !self.command_filter.is_empty() => {
@@ -551,6 +710,10 @@ impl App {
             }
             return;
         }
+        if self.connection_browser_open {
+            self.handle_connection_browser_key(key);
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char(' ') => self.toggle_pause(),
@@ -562,12 +725,25 @@ impl App {
             KeyCode::Char('k') | KeyCode::Char('w') => self.manual_pan(0.0, 0.08),
             KeyCode::Char('j') | KeyCode::Char('s') => self.manual_pan(0.0, -0.08),
             KeyCode::Char('r') => self.reset_camera(),
-            KeyCode::Char('R') if self.refresh_state != RefreshState::Running => {
+            KeyCode::Char('R')
+                if !matches!(
+                    self.refresh_state,
+                    RefreshState::Running | RefreshState::Cancelling
+                ) =>
+            {
                 self.refresh_requested = true;
                 self.dirty = true;
             }
             KeyCode::Char('y') => {
                 self.copy_request = Some(self.current_access_option().command.clone());
+                self.dirty = true;
+            }
+            KeyCode::Char('g') if !self.inventory.connections.is_empty() => {
+                self.connection_browser_open = true;
+                self.connection_browser_index = 0;
+                self.connection_provider_filter = None;
+                self.connection_query.clear();
+                self.connection_search_active = false;
                 self.dirty = true;
             }
             KeyCode::Left => self.previous_target(),
@@ -588,6 +764,112 @@ impl App {
             }
             KeyCode::Enter => {}
             _ => {}
+        }
+    }
+
+    fn handle_connection_browser_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc if self.connection_search_active || !self.connection_query.is_empty() => {
+                self.connection_query.clear();
+                self.connection_search_active = false;
+                self.connection_browser_index = 0;
+                self.dirty = true;
+            }
+            KeyCode::Esc => {
+                self.connection_browser_open = false;
+                self.dirty = true;
+            }
+            KeyCode::Enter if self.connection_search_active => {
+                self.connection_search_active = false;
+                self.dirty = true;
+            }
+            KeyCode::Enter => self.select_browser_connection(),
+            KeyCode::Tab => self.cycle_connection_provider(false),
+            KeyCode::BackTab => self.cycle_connection_provider(true),
+            KeyCode::Up => self.move_connection_browser(-1),
+            KeyCode::Down => self.move_connection_browser(1),
+            KeyCode::Char('/') if !self.connection_search_active => {
+                self.connection_query.clear();
+                self.connection_search_active = true;
+                self.dirty = true;
+            }
+            KeyCode::Backspace if self.connection_search_active => {
+                self.connection_query.pop();
+                self.connection_browser_index = 0;
+                self.dirty = true;
+            }
+            KeyCode::Char(character) if self.connection_search_active => {
+                self.connection_query.push(character);
+                self.connection_browser_index = 0;
+                self.dirty = true;
+            }
+            KeyCode::Char('q') => self.quit = true,
+            _ => {}
+        }
+    }
+
+    fn connection_providers(&self) -> Vec<Provider> {
+        self.inventory
+            .connections
+            .iter()
+            .map(|connection| connection.provider)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn cycle_connection_provider(&mut self, backwards: bool) {
+        let providers = self.connection_providers();
+        let current = self
+            .connection_provider_filter
+            .and_then(|provider| providers.iter().position(|item| *item == provider))
+            .map_or(0, |index| index + 1);
+        let count = providers.len() + 1;
+        let next = if backwards {
+            (current + count - 1) % count
+        } else {
+            (current + 1) % count
+        };
+        self.connection_provider_filter = if next == 0 {
+            None
+        } else {
+            Some(providers[next - 1])
+        };
+        self.connection_browser_index = 0;
+        self.dirty = true;
+    }
+
+    fn move_connection_browser(&mut self, direction: isize) {
+        let count = self.visible_connections().len();
+        if count > 0 {
+            self.connection_browser_index = if direction < 0 {
+                (self.connection_browser_index + count - 1) % count
+            } else {
+                (self.connection_browser_index + 1) % count
+            };
+            self.dirty = true;
+        }
+    }
+
+    fn select_browser_connection(&mut self) {
+        let Some(connection_id) = self
+            .visible_connections()
+            .get(self.connection_browser_index)
+            .map(|connection| connection.id.clone())
+        else {
+            return;
+        };
+        let target_id = format!("discovered:{connection_id}");
+        if let Some(index) = self
+            .topology
+            .targets
+            .iter()
+            .position(|target| target.id == target_id)
+        {
+            self.target_index = index;
+            self.connection_browser_open = false;
+            self.update_camera_focus();
+            self.reset_target_animation();
         }
     }
 

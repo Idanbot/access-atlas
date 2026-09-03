@@ -1,8 +1,8 @@
 use access_atlas::{
     app::{App, ThemeId},
     discovery::{
-        CommandRequest, CommandResult, CommandRunner, DiscoveryConfig, DiscoveryMode,
-        DiscoveryService,
+        CommandRequest, CommandResult, CommandRunner, DiscoveryConfig, DiscoveryEvent,
+        DiscoveryMode, DiscoveryService, Provider, SourceReport, SourceState,
     },
     model::Topology,
     render,
@@ -87,4 +87,22 @@ fn command_library_renders_ten_metadata_specific_templates() {
     assert!(output.contains("Debug workload"));
     assert!(output.contains("payments"));
     assert!(output.contains("Y COPY"));
+}
+
+#[test]
+fn progressive_refresh_status_and_cancel_control_are_rendered() {
+    let mut app = discovered_app();
+    app.mark_refresh_started();
+    app.apply_discovery_event(DiscoveryEvent::Started { total: 9 });
+    app.apply_discovery_event(DiscoveryEvent::Source(SourceReport {
+        provider: Provider::Kubernetes,
+        state: SourceState::Loaded,
+        connections: 1,
+        message: "context loaded".to_owned(),
+    }));
+
+    let output = render_app(&app);
+
+    assert!(output.contains("C CANCEL 1/9"));
+    assert!(output.contains("context loaded"));
 }

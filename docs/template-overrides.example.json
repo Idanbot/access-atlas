@@ -1,0 +1,24 @@
+{
+  "version": 1,
+  "overrides": [
+    {
+      "provider": "kubernetes",
+      "resource_kind": "context",
+      "id": "connect",
+      "label": "Namespace overview",
+      "action": "connect",
+      "command": "kubectl --context {context} --namespace {namespace} get all",
+      "description": "Inspect {namespace} through the selected context."
+    },
+    {
+      "provider": "ssh",
+      "resource_kind": "host",
+      "id": "reachability",
+      "position": 3,
+      "label": "Resolve destination",
+      "action": "debug",
+      "command": "getent hosts {hostname}",
+      "description": "Resolve {hostname} without opening a connection."
+    }
+  ]
+}

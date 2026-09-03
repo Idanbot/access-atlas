@@ -5,6 +5,10 @@ use std::{
     io::Read,
     path::PathBuf,
     process::{Command, Stdio},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -116,6 +120,12 @@ impl Default for ConnectionInventory {
 }
 
 impl ConnectionInventory {
+    pub fn deduplicate(&mut self) {
+        self.connections
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        self.connections.dedup_by(|left, right| left.id == right.id);
+    }
+
     pub fn merge(mut cached: Self, fresh: Self) -> Self {
         let mut updates = fresh
             .connections
@@ -128,10 +138,47 @@ impl ConnectionInventory {
             }
         }
         cached.connections.extend(updates.into_values());
+        cached.deduplicate();
         cached.generated_at_unix = cached.generated_at_unix.max(fresh.generated_at_unix);
         cached.schema_version = cached.schema_version.max(fresh.schema_version);
         cached
     }
+
+    pub fn is_stale_at(&self, now_unix: u64, max_age: Duration) -> bool {
+        !self.connections.is_empty()
+            && now_unix.saturating_sub(self.generated_at_unix) > max_age.as_secs()
+    }
+
+    pub fn reconcile(
+        mut cached: Self,
+        fresh: Self,
+        sources: &[SourceReport],
+        mode: DiscoveryMode,
+    ) -> Self {
+        let authoritative = sources
+            .iter()
+            .filter(|source| source.state == SourceState::Loaded)
+            .map(|source| source.provider)
+            .collect::<BTreeSet<_>>();
+        cached.connections.retain(|connection| {
+            !authoritative.contains(&connection.provider)
+                || (mode == DiscoveryMode::Local && is_online_resource(&connection.kind))
+        });
+        cached.connections.extend(fresh.connections);
+        cached.deduplicate();
+        if !authoritative.is_empty() {
+            cached.generated_at_unix = fresh.generated_at_unix;
+        }
+        cached.schema_version = cached.schema_version.max(fresh.schema_version);
+        cached
+    }
+}
+
+fn is_online_resource(kind: &str) -> bool {
+    matches!(
+        kind,
+        "ec2-instance" | "compute-instance" | "virtual-machine"
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,6 +207,133 @@ pub struct SourceReport {
 pub struct RefreshReport {
     pub inventory: ConnectionInventory,
     pub sources: Vec<SourceReport>,
+    pub notices: Vec<String>,
+    pub cancelled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DiscoveryEvent {
+    Started { total: usize },
+    Source(SourceReport),
+    Finished { completed: usize, cancelled: bool },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CancellationToken(Arc<AtomicBool>);
+
+impl CancellationToken {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AcceptanceReport {
+    pub passed: bool,
+    pub connection_count: usize,
+    pub command_count: usize,
+    pub issues: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+pub fn audit_refresh(refresh: &RefreshReport) -> AcceptanceReport {
+    let mut issues = Vec::new();
+    let mut warnings = refresh.notices.clone();
+    let mut connection_ids = BTreeSet::new();
+    let mut command_count = 0;
+
+    if refresh.inventory.connections.is_empty() {
+        issues.push("no connections were discovered".to_owned());
+    }
+    for source in &refresh.sources {
+        if source.state != SourceState::Loaded {
+            warnings.push(format!(
+                "{} {}: {}",
+                source.provider.as_str(),
+                format!("{:?}", source.state).to_lowercase(),
+                source.message
+            ));
+        }
+    }
+    for connection in &refresh.inventory.connections {
+        if !connection_ids.insert(connection.id.as_str()) {
+            issues.push(format!("duplicate connection id: {}", connection.id));
+        }
+        if connection.commands.len() != 10 {
+            issues.push(format!(
+                "{} has {} commands; expected exactly 10",
+                connection.id,
+                connection.commands.len()
+            ));
+        }
+        let mut command_ids = BTreeSet::new();
+        for command in &connection.commands {
+            command_count += 1;
+            if !command_ids.insert(command.id.as_str()) {
+                issues.push(format!(
+                    "{} has duplicate command id {}",
+                    connection.id, command.id
+                ));
+            }
+            if command.command.trim().is_empty() {
+                issues.push(format!(
+                    "{}/{} has an empty command",
+                    connection.id, command.id
+                ));
+            }
+            if command.command.chars().any(|character| {
+                character == '\n'
+                    || character == '\r'
+                    || character == '\0'
+                    || character.is_control()
+            }) {
+                issues.push(format!(
+                    "{}/{} command must be a single line without control characters",
+                    connection.id, command.id
+                ));
+            }
+            if command.command.contains('{') || command.command.contains('}') {
+                issues.push(format!(
+                    "{}/{} contains an unresolved template placeholder",
+                    connection.id, command.id
+                ));
+            }
+        }
+        for key in connection.metadata.keys() {
+            let normalized = key.to_ascii_lowercase();
+            if [
+                "secret",
+                "token",
+                "credential",
+                "identity_file",
+                "private_key",
+            ]
+            .iter()
+            .any(|sensitive| normalized.contains(sensitive))
+            {
+                issues.push(format!(
+                    "{} exposes prohibited credential metadata key {key}",
+                    connection.id
+                ));
+            }
+        }
+    }
+
+    AcceptanceReport {
+        passed: issues.is_empty(),
+        connection_count: refresh.inventory.connections.len(),
+        command_count,
+        issues,
+        warnings,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -319,6 +493,7 @@ fn join_reader(
 pub struct DiscoveryConfig {
     pub home: PathBuf,
     pub terraform_roots: Vec<PathBuf>,
+    pub template_overrides: Option<PathBuf>,
 }
 
 impl DiscoveryConfig {
@@ -326,7 +501,13 @@ impl DiscoveryConfig {
         Self {
             home,
             terraform_roots,
+            template_overrides: None,
         }
+    }
+
+    pub fn with_template_overrides(mut self, path: PathBuf) -> Self {
+        self.template_overrides = Some(path);
+        self
     }
 }
 
@@ -402,23 +583,46 @@ impl<R: CommandRunner> DiscoveryService<R> {
     }
 
     pub fn refresh(&self, mode: DiscoveryMode) -> RefreshReport {
-        let (mut connections, kubernetes) = discover_kubernetes(&self.runner);
-        let (aws_connections, aws) = discover_aws(&self.runner, mode);
-        let (gcloud_connections, gcloud) = discover_gcloud(&self.runner, mode);
-        let (azure_connections, azure) = discover_azure(&self.runner, mode);
-        let (terraform_connections, terraform) = discover_terraform(&self.config);
-        let (ssh_connections, ssh) = discover_ssh(&self.config);
-        let (docker_connections, docker) = discover_docker(&self.runner);
-        let (tailscale_connections, tailscale) = discover_tailscale(&self.runner);
-        let (cloudflare_connections, cloudflare) = discover_cloudflare(&self.config);
-        connections.extend(aws_connections);
-        connections.extend(gcloud_connections);
-        connections.extend(azure_connections);
-        connections.extend(terraform_connections);
-        connections.extend(ssh_connections);
-        connections.extend(docker_connections);
-        connections.extend(tailscale_connections);
-        connections.extend(cloudflare_connections);
+        self.refresh_with_progress(mode, &CancellationToken::new(), |_| {})
+    }
+
+    pub fn refresh_with_progress<F>(
+        &self,
+        mode: DiscoveryMode,
+        cancellation: &CancellationToken,
+        mut progress: F,
+    ) -> RefreshReport
+    where
+        F: FnMut(DiscoveryEvent),
+    {
+        const SOURCE_COUNT: usize = 9;
+        progress(DiscoveryEvent::Started {
+            total: SOURCE_COUNT,
+        });
+        let mut connections = Vec::new();
+        let mut sources = Vec::new();
+
+        macro_rules! scan {
+            ($discovery:expr) => {
+                if !cancellation.is_cancelled() {
+                    let (found, source) = $discovery;
+                    connections.extend(found);
+                    progress(DiscoveryEvent::Source(source.clone()));
+                    sources.push(source);
+                }
+            };
+        }
+        scan!(discover_kubernetes(&self.runner));
+        scan!(discover_aws(&self.runner, mode));
+        scan!(discover_gcloud(&self.runner, mode));
+        scan!(discover_azure(&self.runner, mode));
+        scan!(discover_terraform(&self.config));
+        scan!(discover_ssh(&self.config));
+        scan!(discover_docker(&self.runner));
+        scan!(discover_tailscale(&self.runner));
+        scan!(discover_cloudflare(&self.config));
+
+        let cancelled = cancellation.is_cancelled();
         let mut inventory = ConnectionInventory {
             schema_version: 1,
             generated_at_unix: SystemTime::now()
@@ -426,16 +630,171 @@ impl<R: CommandRunner> DiscoveryService<R> {
                 .map_or(0, |duration| duration.as_secs()),
             connections,
         };
-        inventory
-            .connections
-            .sort_by(|left, right| left.id.cmp(&right.id));
+        inventory.deduplicate();
+        let notices = self
+            .config
+            .template_overrides
+            .as_deref()
+            .map_or_else(Vec::new, |path| {
+                apply_template_overrides(&mut inventory, path)
+            });
+        let completed = sources.len();
+        progress(DiscoveryEvent::Finished {
+            completed,
+            cancelled,
+        });
         RefreshReport {
             inventory,
-            sources: vec![
-                kubernetes, aws, gcloud, azure, terraform, ssh, docker, tailscale, cloudflare,
-            ],
+            sources,
+            notices,
+            cancelled,
         }
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateOverrideFile {
+    version: u32,
+    #[serde(default)]
+    overrides: Vec<TemplateOverride>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TemplateOverride {
+    provider: Provider,
+    resource_kind: String,
+    id: String,
+    label: String,
+    action: ActionKind,
+    command: String,
+    description: String,
+    #[serde(default)]
+    position: Option<usize>,
+}
+
+fn apply_template_overrides(
+    inventory: &mut ConnectionInventory,
+    path: &std::path::Path,
+) -> Vec<String> {
+    let input = match fs::read_to_string(path) {
+        Ok(input) => input,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(error) => {
+            return vec![format!(
+                "read template overrides {}: {error}",
+                path.display()
+            )];
+        }
+    };
+    let file: TemplateOverrideFile = match serde_json::from_str(&input) {
+        Ok(file) => file,
+        Err(error) => {
+            return vec![format!(
+                "parse template overrides {}: {error}",
+                path.display()
+            )];
+        }
+    };
+    if file.version != 1 {
+        return vec![format!(
+            "template overrides {} use unsupported version {}",
+            path.display(),
+            file.version
+        )];
+    }
+
+    let mut notices = Vec::new();
+    for connection in &mut inventory.connections {
+        for entry in file.overrides.iter().filter(|entry| {
+            entry.provider == connection.provider && entry.resource_kind == connection.kind
+        }) {
+            match rendered_override(entry, connection) {
+                Ok(command) => {
+                    if let Some(index) = connection
+                        .commands
+                        .iter()
+                        .position(|existing| existing.id == entry.id)
+                    {
+                        connection.commands[index] = command;
+                    } else if let Some(position) = entry.position.filter(|position| *position > 0) {
+                        let index = (position - 1).min(connection.commands.len());
+                        connection.commands.insert(index, command);
+                        connection.commands.truncate(10);
+                    } else {
+                        notices.push(format!(
+                            "override {} for {}/{} does not replace a built-in command and needs position 1..10",
+                            entry.id,
+                            entry.provider.as_str(),
+                            entry.resource_kind
+                        ));
+                    }
+                }
+                Err(error) => notices.push(format!(
+                    "override {} for {} was ignored: {error}",
+                    entry.id, connection.id
+                )),
+            }
+        }
+    }
+    notices
+}
+
+fn rendered_override(
+    entry: &TemplateOverride,
+    connection: &DiscoveredConnection,
+) -> Result<CommandTemplate, String> {
+    if entry.id.trim().is_empty()
+        || entry.label.trim().is_empty()
+        || entry.command.trim().is_empty()
+    {
+        return Err("id, label, and command must be non-empty".to_owned());
+    }
+    if entry.command.contains(['\n', '\r', '\0']) {
+        return Err("command must be a single printable line".to_owned());
+    }
+    Ok(CommandTemplate {
+        id: entry.id.clone(),
+        label: interpolate_override(&entry.label, connection, false)?,
+        kind: entry.action,
+        command: interpolate_override(&entry.command, connection, true)?,
+        description: interpolate_override(&entry.description, connection, false)?,
+    })
+}
+
+fn interpolate_override(
+    template: &str,
+    connection: &DiscoveredConnection,
+    quote_values: bool,
+) -> Result<String, String> {
+    let mut output = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        output.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('}') else {
+            return Err("unclosed placeholder".to_owned());
+        };
+        let key = &after[..end];
+        let value = match key {
+            "id" => Some(connection.id.as_str()),
+            "label" => Some(connection.label.as_str()),
+            "provider" => Some(connection.provider.as_str()),
+            "kind" => Some(connection.kind.as_str()),
+            _ => connection.metadata.get(key).map(String::as_str),
+        }
+        .ok_or_else(|| format!("metadata placeholder {{{key}}} is unavailable"))?;
+        if quote_values {
+            output.push_str(&shell_arg(value));
+        } else {
+            output.push_str(value);
+        }
+        rest = &after[end + 1..];
+    }
+    if rest.contains('}') {
+        return Err("unmatched closing brace".to_owned());
+    }
+    output.push_str(rest);
+    Ok(output)
 }
 
 #[derive(Deserialize)]
@@ -683,12 +1042,20 @@ fn discover_aws<R: CommandRunner>(
             commands: aws_profile_commands(profile),
         })
         .collect::<Vec<_>>();
+    let mut online_errors = Vec::new();
     if mode == DiscoveryMode::Online {
         for profile in &profiles {
-            connections.extend(discover_aws_instances(runner, profile));
+            match discover_aws_instances(runner, profile) {
+                Ok(instances) => connections.extend(instances),
+                Err(error) => online_errors.push(format!("profile {profile}: {error}")),
+            }
         }
     }
-    let source = loaded(Provider::Aws, connections.len(), "AWS profiles loaded");
+    let source = if online_errors.is_empty() {
+        loaded(Provider::Aws, connections.len(), "AWS profiles loaded")
+    } else {
+        partial_failed(Provider::Aws, connections.len(), online_errors.join("; "))
+    };
     (connections, source)
 }
 
@@ -743,7 +1110,7 @@ struct AwsTag {
 fn discover_aws_instances<R: CommandRunner>(
     runner: &R,
     profile: &str,
-) -> Vec<DiscoveredConnection> {
+) -> Result<Vec<DiscoveredConnection>, String> {
     let request = CommandRequest {
         program: "aws".to_owned(),
         args: vec![
@@ -756,16 +1123,15 @@ fn discover_aws_instances<R: CommandRunner>(
         ],
         current_dir: None,
     };
-    let Ok(result) = runner.run(&request) else {
-        return Vec::new();
-    };
+    let result = runner
+        .run(&request)
+        .map_err(|error| format!("run aws EC2 discovery: {error}"))?;
     if !result.is_success() {
-        return Vec::new();
+        return Err(command_failure("aws", &result));
     }
-    let Ok(response) = serde_json::from_str::<AwsDescribeInstances>(&result.stdout) else {
-        return Vec::new();
-    };
-    response
+    let response = serde_json::from_str::<AwsDescribeInstances>(&result.stdout)
+        .map_err(|error| format!("parse AWS instances: {error}"))?;
+    Ok(response
         .reservations
         .into_iter()
         .flat_map(|reservation| reservation.instances)
@@ -801,7 +1167,7 @@ fn discover_aws_instances<R: CommandRunner>(
                 commands: aws_instance_commands(&instance.instance_id, profile, &region),
             }
         })
-        .collect()
+        .collect())
 }
 
 fn aws_region_from_zone(zone: &str) -> String {
@@ -1053,6 +1419,7 @@ fn discover_gcloud<R: CommandRunner>(
         }
     };
     let mut connections = Vec::new();
+    let mut online_errors = Vec::new();
     for configuration in configurations {
         let project = configuration.properties.core.project;
         let zone = configuration.properties.compute.zone;
@@ -1081,18 +1448,27 @@ fn discover_gcloud<R: CommandRunner>(
             commands: gcloud_configuration_commands(&configuration.name, &project, &zone),
         });
         if mode == DiscoveryMode::Online && !project.is_empty() {
-            connections.extend(discover_gcloud_instances(
-                runner,
-                &configuration.name,
-                &project,
-            ));
+            match discover_gcloud_instances(runner, &configuration.name, &project) {
+                Ok(instances) => connections.extend(instances),
+                Err(error) => {
+                    online_errors.push(format!("configuration {}: {error}", configuration.name))
+                }
+            }
         }
     }
-    let source = loaded(
-        Provider::Gcloud,
-        connections.len(),
-        "gcloud configurations loaded",
-    );
+    let source = if online_errors.is_empty() {
+        loaded(
+            Provider::Gcloud,
+            connections.len(),
+            "gcloud configurations loaded",
+        )
+    } else {
+        partial_failed(
+            Provider::Gcloud,
+            connections.len(),
+            online_errors.join("; "),
+        )
+    };
     (connections, source)
 }
 
@@ -1126,7 +1502,7 @@ fn discover_gcloud_instances<R: CommandRunner>(
     runner: &R,
     configuration: &str,
     project: &str,
-) -> Vec<DiscoveredConnection> {
+) -> Result<Vec<DiscoveredConnection>, String> {
     let request = CommandRequest {
         program: "gcloud".to_owned(),
         args: vec![
@@ -1141,16 +1517,15 @@ fn discover_gcloud_instances<R: CommandRunner>(
         ],
         current_dir: None,
     };
-    let Ok(result) = runner.run(&request) else {
-        return Vec::new();
-    };
+    let result = runner
+        .run(&request)
+        .map_err(|error| format!("run gcloud instance discovery: {error}"))?;
     if !result.is_success() {
-        return Vec::new();
+        return Err(command_failure("gcloud", &result));
     }
-    let Ok(instances) = serde_json::from_str::<Vec<GcloudInstance>>(&result.stdout) else {
-        return Vec::new();
-    };
-    instances
+    let instances = serde_json::from_str::<Vec<GcloudInstance>>(&result.stdout)
+        .map_err(|error| format!("parse gcloud instances: {error}"))?;
+    Ok(instances
         .into_iter()
         .filter(|instance| !instance.name.is_empty())
         .map(|instance| {
@@ -1186,7 +1561,7 @@ fn discover_gcloud_instances<R: CommandRunner>(
                 commands,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn gcloud_configuration_commands(
@@ -1325,6 +1700,7 @@ fn discover_azure<R: CommandRunner>(
         }
     };
     let mut connections = Vec::new();
+    let mut online_errors = Vec::new();
     for subscription in subscriptions {
         let mut metadata = BTreeMap::from([
             ("subscription_id".to_owned(), subscription.id.clone()),
@@ -1341,14 +1717,23 @@ fn discover_azure<R: CommandRunner>(
             commands: azure_subscription_commands(&subscription.id),
         });
         if mode == DiscoveryMode::Online {
-            connections.extend(discover_azure_vms(runner, &subscription.id));
+            match discover_azure_vms(runner, &subscription.id) {
+                Ok(vms) => connections.extend(vms),
+                Err(error) => {
+                    online_errors.push(format!("subscription {}: {error}", subscription.id))
+                }
+            }
         }
     }
-    let source = loaded(
-        Provider::Azure,
-        connections.len(),
-        "Azure subscriptions loaded",
-    );
+    let source = if online_errors.is_empty() {
+        loaded(
+            Provider::Azure,
+            connections.len(),
+            "Azure subscriptions loaded",
+        )
+    } else {
+        partial_failed(Provider::Azure, connections.len(), online_errors.join("; "))
+    };
     (connections, source)
 }
 
@@ -1373,7 +1758,7 @@ struct AzureVirtualMachine {
 fn discover_azure_vms<R: CommandRunner>(
     runner: &R,
     subscription: &str,
-) -> Vec<DiscoveredConnection> {
+) -> Result<Vec<DiscoveredConnection>, String> {
     let request = CommandRequest {
         program: "az".to_owned(),
         args: vec![
@@ -1387,16 +1772,16 @@ fn discover_azure_vms<R: CommandRunner>(
         ],
         current_dir: None,
     };
-    let Ok(result) = runner.run(&request) else {
-        return Vec::new();
-    };
+    let result = runner
+        .run(&request)
+        .map_err(|error| format!("run Azure VM discovery: {error}"))?;
     if !result.is_success() {
-        return Vec::new();
+        return Err(command_failure("az", &result));
     }
-    let Ok(vms) = serde_json::from_str::<Vec<AzureVirtualMachine>>(&result.stdout) else {
-        return Vec::new();
-    };
-    vms.into_iter()
+    let vms = serde_json::from_str::<Vec<AzureVirtualMachine>>(&result.stdout)
+        .map_err(|error| format!("parse Azure VMs: {error}"))?;
+    Ok(vms
+        .into_iter()
         .filter(|vm| !vm.name.is_empty() && !vm.resource_group.is_empty())
         .map(|vm| {
             let mut metadata = BTreeMap::from([
@@ -1417,7 +1802,7 @@ fn discover_azure_vms<R: CommandRunner>(
                 commands: azure_vm_commands(&vm.name, &vm.resource_group, subscription, &vm.id),
             }
         })
-        .collect()
+        .collect())
 }
 
 fn azure_vm_commands(
@@ -2513,6 +2898,15 @@ fn failed(provider: Provider, message: String) -> SourceReport {
         provider,
         state: SourceState::Failed,
         connections: 0,
+        message,
+    }
+}
+
+fn partial_failed(provider: Provider, connections: usize, message: String) -> SourceReport {
+    SourceReport {
+        provider,
+        state: SourceState::Failed,
+        connections,
         message,
     }
 }

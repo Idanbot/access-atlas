@@ -15,15 +15,15 @@ use std::{
     path::PathBuf,
     sync::mpsc::{self, Receiver, Sender},
     thread,
-    time::Instant,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use access_atlas::{
     app::{App, ThemeId},
     clipboard::osc52_sequence,
     discovery::{
-        ConnectionInventory, DiscoveryConfig, DiscoveryMode, DiscoveryService, InventoryCache,
-        ProcessRunner, RefreshReport,
+        CancellationToken, ConnectionInventory, DiscoveryConfig, DiscoveryEvent, DiscoveryMode,
+        DiscoveryService, InventoryCache, ProcessRunner, RefreshReport, audit_refresh,
     },
     model::Topology,
     render,
@@ -65,6 +65,13 @@ struct Args {
 
     #[arg(
         long,
+        requires = "discover",
+        help = "Audit discovered metadata and templates without executing generated commands"
+    )]
+    audit_connections: bool,
+
+    #[arg(
+        long,
         value_name = "PATH",
         help = "Override the generated connection cache path"
     )]
@@ -83,6 +90,21 @@ struct Args {
         help = "Explicit Terraform root to inspect; may be repeated"
     )]
     terraform_root: Vec<PathBuf>,
+
+    #[arg(
+        long,
+        value_name = "PATH",
+        help = "Versioned JSON file that replaces or inserts typed command templates"
+    )]
+    template_overrides: Option<PathBuf>,
+
+    #[arg(
+        long,
+        default_value_t = 24,
+        value_name = "HOURS",
+        help = "Discard generated connection caches older than this; zero disables cache loading"
+    )]
+    cache_max_age_hours: u64,
 }
 
 fn main() -> Result<()> {
@@ -106,11 +128,22 @@ fn main() -> Result<()> {
                 inventory_cache.path().display()
             )
         })?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report.inventory)
-                .context("serialize discovered connections")?
-        );
+        if args.audit_connections {
+            let audit = audit_refresh(&report);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&audit).context("serialize acceptance audit")?
+            );
+            if !audit.passed {
+                anyhow::bail!("connection acceptance audit failed");
+            }
+        } else {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report.inventory)
+                    .context("serialize discovered connections")?
+            );
+        }
         return Ok(());
     }
 
@@ -146,13 +179,26 @@ fn main() -> Result<()> {
         _ => ThemeId::default(),
     };
 
-    let cached_inventory = inventory_cache.load_or_default().unwrap_or_else(|error| {
+    let mut cached_inventory = inventory_cache.load_or_default().unwrap_or_else(|error| {
         eprintln!(
             "warning: ignored connection cache {}: {error}",
             inventory_cache.path().display()
         );
         ConnectionInventory::default()
     });
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let cache_age = Duration::from_secs(args.cache_max_age_hours.saturating_mul(3_600));
+    if (args.cache_max_age_hours == 0 && !cached_inventory.connections.is_empty())
+        || cached_inventory.is_stale_at(now_unix, cache_age)
+    {
+        eprintln!(
+            "warning: ignored stale connection cache {}",
+            inventory_cache.path().display()
+        );
+        cached_inventory = ConnectionInventory::default();
+    }
     run_tui(
         App::with_inventory(topology, theme, cached_inventory),
         discovery_config,
@@ -182,8 +228,12 @@ fn discovery_setup(args: &Args) -> Result<(DiscoveryConfig, InventoryCache)> {
                 |root| PathBuf::from(root).join("access-atlas/connections.json"),
             )
         });
+    let template_overrides = args
+        .template_overrides
+        .clone()
+        .unwrap_or_else(|| home.join(".config/access-atlas/templates.json"));
     Ok((
-        DiscoveryConfig::new(home, terraform_roots),
+        DiscoveryConfig::new(home, terraform_roots).with_template_overrides(template_overrides),
         InventoryCache::new(cache_path),
     ))
 }
@@ -223,7 +273,13 @@ fn run_tui(
     result
 }
 
-type RefreshResult = std::result::Result<RefreshReport, String>;
+enum RefreshMessage {
+    Progress(DiscoveryEvent),
+    Complete {
+        mode: DiscoveryMode,
+        report: RefreshReport,
+    },
+}
 
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -232,15 +288,17 @@ fn event_loop(
     inventory_cache: InventoryCache,
 ) -> Result<()> {
     let (refresh_tx, refresh_rx) = mpsc::channel();
-    start_refresh(
+    let mut active_cancellation = Some(start_refresh(
         DiscoveryMode::Local,
         discovery_config.clone(),
         refresh_tx.clone(),
-    );
+    ));
     app.mark_refresh_started();
     let mut last_tick = Instant::now();
     while !app.should_quit() {
-        receive_refresh(app, &inventory_cache, &refresh_rx);
+        if receive_refresh(app, &inventory_cache, &refresh_rx) {
+            active_cancellation = None;
+        }
         if app.needs_render() {
             terminal.draw(|frame| render::render(frame, app))?;
             app.mark_rendered();
@@ -255,11 +313,16 @@ fn event_loop(
         }
         if app.take_refresh_request() {
             app.mark_refresh_started();
-            start_refresh(
+            active_cancellation = Some(start_refresh(
                 DiscoveryMode::Online,
                 discovery_config.clone(),
                 refresh_tx.clone(),
-            );
+            ));
+        }
+        if app.take_cancel_request()
+            && let Some(cancellation) = &active_cancellation
+        {
+            cancellation.cancel();
         }
         if let Some(command) = app.take_copy_request() {
             terminal
@@ -275,31 +338,51 @@ fn event_loop(
     Ok(())
 }
 
-fn start_refresh(mode: DiscoveryMode, config: DiscoveryConfig, sender: Sender<RefreshResult>) {
+fn start_refresh(
+    mode: DiscoveryMode,
+    config: DiscoveryConfig,
+    sender: Sender<RefreshMessage>,
+) -> CancellationToken {
+    let cancellation = CancellationToken::new();
+    let worker_cancellation = cancellation.clone();
     thread::spawn(move || {
         let report = DiscoveryService::new(
             ProcessRunner::new(std::time::Duration::from_secs(8)),
             config,
         )
-        .refresh(mode);
-        let _ = sender.send(Ok(report));
+        .refresh_with_progress(mode, &worker_cancellation, |event| {
+            let _ = sender.send(RefreshMessage::Progress(event));
+        });
+        let _ = sender.send(RefreshMessage::Complete { mode, report });
     });
+    cancellation
 }
 
-fn receive_refresh(app: &mut App, cache: &InventoryCache, receiver: &Receiver<RefreshResult>) {
-    let Ok(result) = receiver.try_recv() else {
-        return;
-    };
-    match result {
-        Ok(mut report) => {
-            report.inventory =
-                ConnectionInventory::merge(app.inventory().clone(), report.inventory);
-            if let Err(error) = cache.store(&report.inventory) {
-                app.mark_refresh_failed(format!("cache write failed: {error}"));
-            } else {
-                app.apply_refresh(report);
+fn receive_refresh(
+    app: &mut App,
+    cache: &InventoryCache,
+    receiver: &Receiver<RefreshMessage>,
+) -> bool {
+    let mut completed = false;
+    while let Ok(message) = receiver.try_recv() {
+        match message {
+            RefreshMessage::Progress(event) => app.apply_discovery_event(event),
+            RefreshMessage::Complete { mode, mut report } => {
+                report.inventory = ConnectionInventory::reconcile(
+                    app.inventory().clone(),
+                    report.inventory,
+                    &report.sources,
+                    mode,
+                );
+                if let Err(error) = cache.store(&report.inventory) {
+                    app.apply_refresh(report);
+                    app.mark_refresh_failed(format!("cache write failed: {error}"));
+                } else {
+                    app.apply_refresh(report);
+                }
+                completed = true;
             }
         }
-        Err(error) => app.mark_refresh_failed(error),
     }
+    completed
 }

@@ -2,6 +2,26 @@ use access_atlas::discovery::{AcceptanceReport, ConnectionInventory, InventoryCa
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 #[test]
+fn validate_cli_does_not_require_discovery_configuration() {
+    let output = Command::new(env!("CARGO_BIN_EXE_access-atlas"))
+        .arg("--validate")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_remove("HOME")
+        .env_remove("ACCESS_ATLAS_HOME")
+        .env_remove("ACCESS_ATLAS_CACHE")
+        .env_remove("XDG_CACHE_HOME")
+        .output()
+        .expect("validation CLI should run without discovery configuration");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("validated 8 targets"));
+}
+
+#[test]
 fn discover_cli_supports_a_fresh_isolated_install() {
     let sandbox = tempfile::tempdir().expect("sandbox should exist");
     let bin = sandbox.path().join("bin");

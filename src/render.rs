@@ -819,24 +819,34 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
             Style::default().fg(to_color(theme.border_color)),
         ));
     }
-    lines.push(Line::from(vec![
+    let mut primary_controls = vec![
         key_span("←/→", theme),
         hint_span(" target  "),
         key_span("Tab", theme),
         hint_span(" access  "),
         key_span("↑/↓", theme),
         hint_span(" inspect  "),
-        key_span("g", theme),
-        hint_span(if app.inventory().connections.is_empty() {
+    ];
+    if app.discovery_enabled() {
+        primary_controls.push(key_span("g", theme));
+        primary_controls.push(hint_span(if app.inventory().connections.is_empty() {
             " connections (empty)  "
         } else {
             " connections  "
-        }),
+        }));
+    } else {
+        primary_controls.push(Span::styled(
+            "DEMO ONLY  ",
+            Style::default().fg(to_color(theme.hud_accent)),
+        ));
+    }
+    primary_controls.extend([
         key_span("Space", theme),
         hint_span(" auto  "),
         key_span("q", theme),
         hint_span(" quit"),
-    ]));
+    ]);
+    lines.push(Line::from(primary_controls));
     if area.height > 1 {
         let mut controls = vec![
             key_span("h j k l", theme),
@@ -848,24 +858,26 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
             key_span("t", theme),
             hint_span(" palette  "),
         ];
-        match app.refresh_state() {
-            RefreshState::Running => {
-                let (completed, total) = app.refresh_progress();
-                controls.push(key_span("C", theme));
-                controls.push(Span::styled(
-                    format!(" cancel {completed}/{total}"),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-            RefreshState::Cancelling => {
-                controls.push(Span::styled(
-                    " cancelling…",
-                    Style::default().fg(to_color(theme.active_target)),
-                ));
-            }
-            _ => {
-                controls.push(key_span("R", theme));
-                controls.push(hint_span(" refresh"));
+        if app.discovery_enabled() {
+            match app.refresh_state() {
+                RefreshState::Running => {
+                    let (completed, total) = app.refresh_progress();
+                    controls.push(key_span("C", theme));
+                    controls.push(Span::styled(
+                        format!(" cancel {completed}/{total}"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
+                RefreshState::Cancelling => {
+                    controls.push(Span::styled(
+                        " cancelling…",
+                        Style::default().fg(to_color(theme.active_target)),
+                    ));
+                }
+                _ => {
+                    controls.push(key_span("R", theme));
+                    controls.push(hint_span(" refresh"));
+                }
             }
         }
         if !app.refresh_notices().is_empty() {

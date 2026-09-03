@@ -107,6 +107,7 @@ pub struct App {
     connection_provider_filter: Option<Provider>,
     connection_query: String,
     connection_search_active: bool,
+    discovery_enabled: bool,
     refresh_requested: bool,
     cancel_requested: bool,
     refresh_state: RefreshState,
@@ -174,6 +175,7 @@ impl App {
             connection_provider_filter: None,
             connection_query: String::new(),
             connection_search_active: false,
+            discovery_enabled: true,
             refresh_requested: false,
             cancel_requested: false,
             refresh_state: RefreshState::Idle,
@@ -190,6 +192,16 @@ impl App {
 
     pub fn inventory(&self) -> &ConnectionInventory {
         &self.inventory
+    }
+
+    pub fn with_discovery_enabled(mut self, enabled: bool) -> Self {
+        self.discovery_enabled = enabled;
+        self.dirty = true;
+        self
+    }
+
+    pub fn discovery_enabled(&self) -> bool {
+        self.discovery_enabled
     }
 
     pub fn source_reports(&self) -> &[SourceReport] {
@@ -726,10 +738,11 @@ impl App {
             KeyCode::Char('j') | KeyCode::Char('s') => self.manual_pan(0.0, -0.08),
             KeyCode::Char('r') => self.reset_camera(),
             KeyCode::Char('R')
-                if !matches!(
-                    self.refresh_state,
-                    RefreshState::Running | RefreshState::Cancelling
-                ) =>
+                if self.discovery_enabled
+                    && !matches!(
+                        self.refresh_state,
+                        RefreshState::Running | RefreshState::Cancelling
+                    ) =>
             {
                 self.refresh_requested = true;
                 self.dirty = true;

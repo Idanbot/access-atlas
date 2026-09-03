@@ -73,6 +73,17 @@ fn discovered_target_exposes_command_library_and_refresh_controls() {
 }
 
 #[test]
+fn demo_only_footer_hides_discovery_controls() {
+    let topology = Topology::from_json(FIXTURE).expect("fixture should load");
+    let app = App::with_theme(topology, ThemeId::CyberOrbital).with_discovery_enabled(false);
+    let output = render_app(&app);
+
+    assert!(output.contains("DEMO ONLY"));
+    assert!(!output.contains("connections (empty)"));
+    assert!(!output.contains("R refresh"));
+}
+
+#[test]
 fn command_library_renders_ten_metadata_specific_templates() {
     let mut app = discovered_app();
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));

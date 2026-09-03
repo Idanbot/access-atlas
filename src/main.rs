@@ -35,7 +35,7 @@ const EMBEDDED_DEMO: &str = include_str!("../data/demo-topology.json");
 #[command(
     name = "access-atlas",
     version,
-    about = "Animated read-only access topology demo"
+    about = "Local-first infrastructure access map and command catalog"
 )]
 struct Args {
     #[arg(long, default_value = "data/demo-topology.json")]
@@ -43,6 +43,19 @@ struct Args {
 
     #[arg(long, help = "Parse and validate the topology without opening the TUI")]
     validate: bool,
+
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "discover",
+            "connections_cache",
+            "discovery_home",
+            "terraform_root",
+            "template_overrides"
+        ],
+        help = "Open the topology without reading cached connections or scanning local tools"
+    )]
+    demo_only: bool,
 
     #[arg(
         long,
@@ -110,8 +123,8 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let (discovery_config, inventory_cache) = discovery_setup(&args)?;
     if args.discover {
+        let (discovery_config, inventory_cache) = discovery_setup(&args)?;
         let mode = if args.online {
             DiscoveryMode::Online
         } else {
@@ -179,6 +192,15 @@ fn main() -> Result<()> {
         _ => ThemeId::default(),
     };
 
+    if args.demo_only {
+        return run_tui(
+            App::with_inventory(topology, theme, ConnectionInventory::default())
+                .with_discovery_enabled(false),
+            None,
+        );
+    }
+
+    let (discovery_config, inventory_cache) = discovery_setup(&args)?;
     let mut cached_inventory = inventory_cache.load_or_default().unwrap_or_else(|error| {
         eprintln!(
             "warning: ignored connection cache {}: {error}",
@@ -201,8 +223,7 @@ fn main() -> Result<()> {
     }
     run_tui(
         App::with_inventory(topology, theme, cached_inventory),
-        discovery_config,
-        inventory_cache,
+        Some((discovery_config, inventory_cache)),
     )
 }
 
@@ -253,11 +274,7 @@ fn load_topology(path: &PathBuf) -> Result<Topology> {
     }
 }
 
-fn run_tui(
-    mut app: App,
-    discovery_config: DiscoveryConfig,
-    inventory_cache: InventoryCache,
-) -> Result<()> {
+fn run_tui(mut app: App, discovery: Option<(DiscoveryConfig, InventoryCache)>) -> Result<()> {
     enable_raw_mode().context("enable raw terminal mode")?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, Clear(ClearType::All), Hide)
@@ -265,7 +282,7 @@ fn run_tui(
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
 
-    let result = event_loop(&mut terminal, &mut app, discovery_config, inventory_cache);
+    let result = event_loop(&mut terminal, &mut app, discovery);
 
     disable_raw_mode().context("disable raw terminal mode")?;
     execute!(terminal.backend_mut(), Show, LeaveAlternateScreen)
@@ -284,19 +301,18 @@ enum RefreshMessage {
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
-    discovery_config: DiscoveryConfig,
-    inventory_cache: InventoryCache,
+    discovery: Option<(DiscoveryConfig, InventoryCache)>,
 ) -> Result<()> {
     let (refresh_tx, refresh_rx) = mpsc::channel();
-    let mut active_cancellation = Some(start_refresh(
-        DiscoveryMode::Local,
-        discovery_config.clone(),
-        refresh_tx.clone(),
-    ));
-    app.mark_refresh_started();
+    let mut active_cancellation = discovery.as_ref().map(|(config, _)| {
+        app.mark_refresh_started();
+        start_refresh(DiscoveryMode::Local, config.clone(), refresh_tx.clone())
+    });
     let mut last_tick = Instant::now();
     while !app.should_quit() {
-        if receive_refresh(app, &inventory_cache, &refresh_rx) {
+        if let Some((_, cache)) = &discovery
+            && receive_refresh(app, cache, &refresh_rx)
+        {
             active_cancellation = None;
         }
         if app.needs_render() {
@@ -312,12 +328,16 @@ fn event_loop(
             app.handle_event(read()?);
         }
         if app.take_refresh_request() {
-            app.mark_refresh_started();
-            active_cancellation = Some(start_refresh(
-                DiscoveryMode::Online,
-                discovery_config.clone(),
-                refresh_tx.clone(),
-            ));
+            if let Some((config, _)) = &discovery {
+                app.mark_refresh_started();
+                active_cancellation = Some(start_refresh(
+                    DiscoveryMode::Online,
+                    config.clone(),
+                    refresh_tx.clone(),
+                ));
+            } else {
+                app.mark_refresh_failed("Discovery is disabled by --demo-only");
+            }
         }
         if app.take_cancel_request()
             && let Some(cancellation) = &active_cancellation
@@ -385,4 +405,48 @@ fn receive_refresh(
         }
     }
     completed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn demo_only_arguments_parse() {
+        let args = Args::try_parse_from(["access-atlas", "--demo-only"])
+            .expect("demo-only arguments should parse");
+
+        assert!(args.demo_only);
+        assert!(!args.discover);
+    }
+
+    #[test]
+    fn demo_only_disables_the_refresh_shortcut() {
+        let topology = Topology::from_json(EMBEDDED_DEMO).expect("embedded topology should parse");
+        let mut app =
+            App::with_inventory(topology, ThemeId::default(), ConnectionInventory::default())
+                .with_discovery_enabled(false);
+        app.handle_key(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('R'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
+
+        assert!(!app.discovery_enabled());
+        assert!(!app.take_refresh_request());
+    }
+
+    #[test]
+    fn demo_only_rejects_discovery_configuration() {
+        for arguments in [
+            vec!["access-atlas", "--demo-only", "--discover"],
+            vec![
+                "access-atlas",
+                "--demo-only",
+                "--connections-cache",
+                "connections.json",
+            ],
+        ] {
+            assert!(Args::try_parse_from(arguments).is_err());
+        }
+    }
 }

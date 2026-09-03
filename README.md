@@ -39,6 +39,12 @@ cargo run --release
 
 The app opens immediately with its embedded demo topology. In parallel, it refreshes local connection metadata and reuses a cache no older than 24 hours.
 
+Explore only the mocked topology without reading a connection cache or invoking installed provider tools:
+
+```sh
+cargo run --release -- --demo-only
+```
+
 Run an isolated Docker demo:
 
 ```sh
@@ -143,6 +149,7 @@ Useful configuration:
 | --- | --- |
 | `--connections-cache PATH` / `ACCESS_ATLAS_CACHE` | Override the generated inventory cache |
 | `--discovery-home PATH` / `ACCESS_ATLAS_HOME` | Use an isolated discovery home |
+| `--demo-only` | Skip the cache and all local/provider discovery |
 | `--cache-max-age-hours HOURS` | Change cache lifetime; `0` disables cache loading |
 | `--terraform-root PATH` | Add an explicit Terraform discovery root |
 | `--template-overrides PATH` | Load versioned command-template overrides |
@@ -163,6 +170,7 @@ See the [complete override example](docs/template-overrides.example.json).
 ## Safety and privacy model
 
 - Generated commands are never run by Access Atlas.
+- `--demo-only` avoids reading cached connections and invoking provider tools.
 - Online cloud discovery only happens after `--online` or uppercase `R`.
 - Discovery retains operational metadata but omits credentials and SSH identity-file contents.
 - The inventory cache is separate from the authored demo topology.
@@ -195,13 +203,3 @@ Run formatting, Clippy, tests, isolated mock-provider discovery, and JSON valida
 ```
 
 The Docker smoke test starts from an isolated home and mock executables, so it verifies fresh-install behavior and deterministic discovered connections without requiring real provider accounts. The same checks run in GitHub Actions.
-
-## Highest-value next improvements
-
-1. **Provider adapter contract:** move scanners and templates behind a documented plugin interface so new CLIs can be added without changing the core app.
-2. **Access preflight:** add explicitly requested, non-mutating checks for CLI availability, authentication expiry, DNS, and route prerequisites—while keeping command execution out of scope.
-3. **Resource correlation:** connect the same workload across Terraform state, cloud instances, Kubernetes, SSH, and tunnels, with confidence and provenance for every inferred edge.
-4. **Inventory history and redacted sharing:** show additions/removals over time and export a deliberately redacted snapshot for incident handoff or onboarding review.
-5. **Production distribution:** publish signed binaries, checksums, release notes, and package-manager installs, then add compatibility testing across Linux and macOS terminals.
-
-Those improvements turn the current visual command catalog into a durable access-intelligence layer without turning it into another credential store or remote-execution system.

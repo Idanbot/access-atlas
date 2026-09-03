@@ -1,6 +1,13 @@
-use crate::model::{AccessOption, DetailRow, NetworkType, Target, Topology};
+use crate::{
+    discovery::{
+        CommandTemplate, ConnectionInventory, DiscoveredConnection, RefreshReport, SourceReport,
+        SourceState,
+    },
+    model::{AccessOption, DetailRow, Health, Location, NetworkType, Target, Topology},
+};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
+    collections::BTreeMap,
     f64::consts::{PI, TAU},
     time::Duration,
 };
@@ -51,8 +58,23 @@ pub struct CameraTransition {
     pub duration: Duration,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum RefreshState {
+    #[default]
+    Idle,
+    Running,
+    Complete {
+        loaded: usize,
+        failed: usize,
+    },
+    Failed(String),
+}
+
 pub struct App {
     topology: Topology,
+    base_target_count: usize,
+    inventory: ConnectionInventory,
+    source_reports: Vec<SourceReport>,
     target_index: usize,
     network_type_index: usize,
     access_option_index: usize,
@@ -72,6 +94,13 @@ pub struct App {
     theme: ThemeId,
     dirty: bool,
     quit: bool,
+    command_library_open: bool,
+    command_library_index: usize,
+    command_filter: String,
+    command_search_active: bool,
+    refresh_requested: bool,
+    refresh_state: RefreshState,
+    copy_request: Option<String>,
 }
 
 impl App {
@@ -80,11 +109,29 @@ impl App {
     }
 
     pub fn with_theme(topology: Topology, theme: ThemeId) -> Self {
+        Self::with_inventory(topology, theme, ConnectionInventory::default())
+    }
+
+    pub fn with_inventory(
+        mut topology: Topology,
+        theme: ThemeId,
+        inventory: ConnectionInventory,
+    ) -> Self {
+        let base_target_count = topology.targets.len();
+        let fallback_location = topology.origin.location.clone();
+        topology
+            .targets
+            .extend(inventory.connections.iter().map(|connection| {
+                connection_target(connection, &fallback_location, inventory.generated_at_unix)
+            }));
         let focus_rotation = target_focus_rotation(&topology.targets[0]);
         let focus_pitch = target_focus_pitch(&topology.targets[0]);
         let focus_zoom = target_focus_zoom(&topology.targets[0]);
         Self {
             topology,
+            base_target_count,
+            inventory,
+            source_reports: Vec::new(),
             target_index: 0,
             network_type_index: 0,
             access_option_index: 0,
@@ -104,11 +151,146 @@ impl App {
             theme,
             dirty: true,
             quit: false,
+            command_library_open: false,
+            command_library_index: 0,
+            command_filter: String::new(),
+            command_search_active: false,
+            refresh_requested: false,
+            refresh_state: RefreshState::Idle,
+            copy_request: None,
         }
     }
 
     pub fn topology(&self) -> &Topology {
         &self.topology
+    }
+
+    pub fn inventory(&self) -> &ConnectionInventory {
+        &self.inventory
+    }
+
+    pub fn source_reports(&self) -> &[SourceReport] {
+        &self.source_reports
+    }
+
+    pub fn current_source_report(&self) -> Option<&SourceReport> {
+        let provider = self.current_connection()?.provider;
+        self.source_reports
+            .iter()
+            .find(|source| source.provider == provider)
+    }
+
+    pub fn current_connection(&self) -> Option<&DiscoveredConnection> {
+        let id = self.target().id.strip_prefix("discovered:")?;
+        self.inventory
+            .connections
+            .iter()
+            .find(|connection| connection.id == id)
+    }
+
+    pub fn extended_commands(&self) -> &[CommandTemplate] {
+        self.current_connection()
+            .map_or(&[], |connection| connection.commands.as_slice())
+    }
+
+    pub fn selected_extended_command(&self) -> Option<&CommandTemplate> {
+        self.extended_commands().get(self.command_library_index)
+    }
+
+    pub fn command_filter(&self) -> &str {
+        &self.command_filter
+    }
+
+    pub fn command_search_active(&self) -> bool {
+        self.command_search_active
+    }
+
+    pub fn visible_extended_commands(&self) -> Vec<(usize, &CommandTemplate)> {
+        let needle = self.command_filter.to_lowercase();
+        self.extended_commands()
+            .iter()
+            .enumerate()
+            .filter(|(_, command)| {
+                needle.is_empty()
+                    || format!(
+                        "{} {:?} {} {}",
+                        command.label, command.kind, command.command, command.description
+                    )
+                    .to_lowercase()
+                    .contains(&needle)
+            })
+            .collect()
+    }
+
+    pub fn command_library_open(&self) -> bool {
+        self.command_library_open
+    }
+
+    pub fn command_library_index(&self) -> usize {
+        self.command_library_index
+    }
+
+    pub fn refresh_state(&self) -> &RefreshState {
+        &self.refresh_state
+    }
+
+    pub fn take_refresh_request(&mut self) -> bool {
+        std::mem::take(&mut self.refresh_requested)
+    }
+
+    pub fn mark_refresh_started(&mut self) {
+        self.refresh_state = RefreshState::Running;
+        self.dirty = true;
+    }
+
+    pub fn mark_refresh_failed(&mut self, message: impl Into<String>) {
+        self.refresh_state = RefreshState::Failed(message.into());
+        self.dirty = true;
+    }
+
+    pub fn take_copy_request(&mut self) -> Option<String> {
+        self.copy_request.take()
+    }
+
+    pub fn apply_refresh(&mut self, report: RefreshReport) {
+        let loaded = report
+            .sources
+            .iter()
+            .filter(|source| source.state == SourceState::Loaded)
+            .count();
+        let failed = report
+            .sources
+            .iter()
+            .filter(|source| source.state == SourceState::Failed)
+            .count();
+        self.source_reports = report.sources;
+        self.apply_inventory(report.inventory);
+        self.refresh_state = RefreshState::Complete { loaded, failed };
+        self.dirty = true;
+    }
+
+    pub fn apply_inventory(&mut self, inventory: ConnectionInventory) {
+        let selected_id = self.target().id.clone();
+        let fallback_location = self.topology.origin.location.clone();
+        self.topology.targets.truncate(self.base_target_count);
+        self.topology
+            .targets
+            .extend(inventory.connections.iter().map(|connection| {
+                connection_target(connection, &fallback_location, inventory.generated_at_unix)
+            }));
+        self.inventory = inventory;
+        self.target_index = self
+            .topology
+            .targets
+            .iter()
+            .position(|target| target.id == selected_id)
+            .unwrap_or(0);
+        self.command_library_open = false;
+        self.command_library_index = 0;
+        self.command_filter.clear();
+        self.command_search_active = false;
+        self.reset_target_animation();
+        self.update_camera_focus();
     }
 
     pub fn target(&self) -> &Target {
@@ -332,6 +514,43 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if self.command_library_open {
+            match key.code {
+                KeyCode::Esc if self.command_search_active || !self.command_filter.is_empty() => {
+                    self.command_filter.clear();
+                    self.command_search_active = false;
+                    self.command_library_index = 0;
+                    self.dirty = true;
+                }
+                KeyCode::Esc | KeyCode::Enter if !self.command_search_active => {
+                    self.command_library_open = false;
+                    self.dirty = true;
+                }
+                KeyCode::Enter => {
+                    self.command_search_active = false;
+                    self.dirty = true;
+                }
+                KeyCode::Up | KeyCode::BackTab => self.previous_extended_command(),
+                KeyCode::Down | KeyCode::Tab => self.next_extended_command(),
+                KeyCode::Char('/') if !self.command_search_active => {
+                    self.command_filter.clear();
+                    self.command_search_active = true;
+                    self.dirty = true;
+                }
+                KeyCode::Backspace if self.command_search_active => {
+                    self.command_filter.pop();
+                    self.select_first_visible_command();
+                }
+                KeyCode::Char(character) if self.command_search_active => {
+                    self.command_filter.push(character);
+                    self.select_first_visible_command();
+                }
+                KeyCode::Char('y') => self.copy_extended_command(),
+                KeyCode::Char('q') => self.quit = true,
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char(' ') => self.toggle_pause(),
@@ -343,6 +562,14 @@ impl App {
             KeyCode::Char('k') | KeyCode::Char('w') => self.manual_pan(0.0, 0.08),
             KeyCode::Char('j') | KeyCode::Char('s') => self.manual_pan(0.0, -0.08),
             KeyCode::Char('r') => self.reset_camera(),
+            KeyCode::Char('R') if self.refresh_state != RefreshState::Running => {
+                self.refresh_requested = true;
+                self.dirty = true;
+            }
+            KeyCode::Char('y') => {
+                self.copy_request = Some(self.current_access_option().command.clone());
+                self.dirty = true;
+            }
             KeyCode::Left => self.previous_target(),
             KeyCode::Right => self.next_target(),
             KeyCode::Up => self.previous_detail(),
@@ -352,9 +579,62 @@ impl App {
             }
             KeyCode::Tab => self.next_access_option(),
             KeyCode::BackTab => self.previous_access_option(),
+            KeyCode::Enter if !self.extended_commands().is_empty() => {
+                self.command_library_open = true;
+                self.command_library_index = 0;
+                self.command_filter.clear();
+                self.command_search_active = false;
+                self.dirty = true;
+            }
             KeyCode::Enter => {}
             _ => {}
         }
+    }
+
+    fn next_extended_command(&mut self) {
+        let indices = self
+            .visible_extended_commands()
+            .into_iter()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !indices.is_empty() {
+            let position = indices
+                .iter()
+                .position(|index| *index == self.command_library_index)
+                .unwrap_or(0);
+            self.command_library_index = indices[(position + 1) % indices.len()];
+            self.dirty = true;
+        }
+    }
+
+    fn previous_extended_command(&mut self) {
+        let indices = self
+            .visible_extended_commands()
+            .into_iter()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        if !indices.is_empty() {
+            let position = indices
+                .iter()
+                .position(|index| *index == self.command_library_index)
+                .unwrap_or(0);
+            self.command_library_index = indices[(position + indices.len() - 1) % indices.len()];
+            self.dirty = true;
+        }
+    }
+
+    fn select_first_visible_command(&mut self) {
+        if let Some((index, _)) = self.visible_extended_commands().first() {
+            self.command_library_index = *index;
+        }
+        self.dirty = true;
+    }
+
+    fn copy_extended_command(&mut self) {
+        self.copy_request = self
+            .selected_extended_command()
+            .map(|command| command.command.clone());
+        self.dirty = true;
     }
 
     pub fn toggle_pause(&mut self) {
@@ -497,6 +777,130 @@ impl App {
             elapsed: Duration::ZERO,
             duration: Duration::from_millis(1_400),
         });
+    }
+}
+
+fn connection_target(
+    connection: &DiscoveredConnection,
+    fallback_location: &Location,
+    generated_at_unix: u64,
+) -> Target {
+    let mut location = inferred_connection_location(connection, fallback_location);
+    location.source = format!("{} CLI discovery", connection.provider.as_str());
+    let state = connection
+        .metadata
+        .get("power_state")
+        .or_else(|| connection.metadata.get("state"))
+        .or_else(|| connection.metadata.get("status"))
+        .cloned()
+        .unwrap_or_else(|| {
+            if connection
+                .metadata
+                .get("online")
+                .is_some_and(|value| value == "true")
+            {
+                "reachable".to_owned()
+            } else {
+                "discovered".to_owned()
+            }
+        });
+    let primary = connection.primary_commands();
+    let binary = primary
+        .first()
+        .and_then(|command| command.command.split_whitespace().next())
+        .unwrap_or(connection.provider.as_str())
+        .to_owned();
+    let access_options = primary
+        .into_iter()
+        .map(|command| AccessOption {
+            id: command.id.clone(),
+            label: command.label.clone(),
+            command: command.command.clone(),
+            route: vec![
+                "local-workstation".to_owned(),
+                connection.provider.as_str().to_owned(),
+                connection.label.clone(),
+            ],
+            notes: command.description.clone(),
+        })
+        .collect();
+    let mut metadata = connection.metadata.clone();
+    metadata.insert(
+        "discovery.provider".to_owned(),
+        connection.provider.as_str().to_owned(),
+    );
+    metadata.insert("discovery.kind".to_owned(), connection.kind.clone());
+
+    Target {
+        id: format!("discovered:{}", connection.id),
+        label: connection.label.clone(),
+        kind: connection.kind.clone(),
+        provider: connection.provider.as_str().to_owned(),
+        location,
+        status: Health {
+            state,
+            uptime_seconds: 0,
+            latency_ms: 0.0,
+            packet_loss_percent: 0.0,
+            checked_at: format!("unix:{generated_at_unix}"),
+        },
+        network: BTreeMap::from([("source".to_owned(), "local-cli".to_owned())]),
+        metadata,
+        network_types: vec![NetworkType {
+            id: "discovered-commands".to_owned(),
+            label: format!("{} {}", connection.provider.as_str(), connection.kind),
+            binary,
+            description: "Read-only command templates generated from discovered metadata."
+                .to_owned(),
+            access_options,
+        }],
+    }
+}
+
+fn inferred_connection_location(
+    connection: &DiscoveredConnection,
+    fallback_location: &Location,
+) -> Location {
+    let region = connection
+        .metadata
+        .get("region")
+        .or_else(|| connection.metadata.get("location"))
+        .or_else(|| connection.metadata.get("zone"))
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_owned());
+    let (city, country, latitude, longitude, located) = match region.as_str() {
+        value if value.starts_with("europe-west4") => ("Amsterdam", "NL", 52.37, 4.90, true),
+        value if value.starts_with("eu-west-1") => ("Dublin", "IE", 53.35, -6.26, true),
+        "westeurope" => ("Amsterdam", "NL", 52.37, 4.90, true),
+        value if value.starts_with("us-east-1") => ("Ashburn", "US", 39.04, -77.49, true),
+        value if value.starts_with("asia-northeast1") => ("Tokyo", "JP", 35.68, 139.65, true),
+        _ => (
+            "Unlocated",
+            "--",
+            fallback_location.latitude,
+            fallback_location.longitude,
+            false,
+        ),
+    };
+    Location {
+        label: if located {
+            format!("Provider region {region}")
+        } else {
+            "Unlocated · anchored to origin".to_owned()
+        },
+        region,
+        city: city.to_owned(),
+        country: country.to_owned(),
+        timezone: "unknown".to_owned(),
+        source: String::new(),
+        precision: if located {
+            "provider-region"
+        } else {
+            "unknown"
+        }
+        .to_owned(),
+        latitude,
+        longitude,
     }
 }
 

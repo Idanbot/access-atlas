@@ -1,4 +1,4 @@
-use crate::app::{App, ThemeId};
+use crate::app::{App, RefreshState, ThemeId};
 use glam::DVec3;
 use ratatui::{
     Frame,
@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Paragraph, Widget},
+    widgets::{Block, BorderType, Clear, Paragraph, Widget, Wrap},
 };
 
 const MASK_WIDTH: usize = 1440;
@@ -153,6 +153,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_command_rail(frame, layout.rail, app, &theme);
     render_footer(frame, layout.footer, &theme);
+    if app.command_library_open() {
+        render_command_library(frame, area, app, &theme);
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -381,7 +384,26 @@ fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
         ),
         Line::styled(metrics, Style::default().fg(to_color(theme.hud_text))),
     ];
-    if area.height >= 8 {
+    if area.height >= 8 && app.current_connection().is_some() {
+        let sync = if let Some(source) = app.current_source_report() {
+            format!(
+                "{:?} · {} found · {}",
+                source.state, source.connections, source.message
+            )
+        } else {
+            match app.refresh_state() {
+                RefreshState::Running => "RUNNING · provider scan queued".to_owned(),
+                _ => "CACHE · press R for online refresh".to_owned(),
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::styled("SYNC   ", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                ellipsized_panel_text(&sync, area.width.saturating_sub(10) as usize),
+                Style::default().fg(to_color(theme.hud_text)),
+            ),
+        ]));
+    } else if area.height >= 8 {
         lines.push(Line::from(vec![
             Span::styled("CHECK  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -468,7 +490,31 @@ fn render_access_vector(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
             Span::styled(chunk, Style::default().fg(to_color(theme.hud_text))),
         ]));
     }
-    if area.height >= 9 {
+    if !app.extended_commands().is_empty() {
+        let refresh = match app.refresh_state() {
+            RefreshState::Idle => "R REFRESH".to_owned(),
+            RefreshState::Running => "REFRESHING…".to_owned(),
+            RefreshState::Complete { loaded, failed } => {
+                format!("R REFRESH {loaded} OK/{failed} ERR")
+            }
+            RefreshState::Failed(_) => "R REFRESH FAILED".to_owned(),
+        };
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(" ENTER {} COMMANDS ", app.extended_commands().len()),
+                Style::default()
+                    .fg(to_color(theme.background))
+                    .bg(to_color(theme.active_target))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "  Y COPY  ",
+                Style::default().fg(to_color(theme.hud_accent)),
+            ),
+            Span::styled(refresh, Style::default().fg(to_color(theme.hud_text))),
+        ]));
+    }
+    if area.height >= 9 && app.extended_commands().is_empty() {
         let description =
             ellipsized_panel_text(&network.description, area.width.saturating_sub(10) as usize);
         lines.push(Line::from(vec![
@@ -476,7 +522,7 @@ fn render_access_vector(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
             Span::styled(description, Style::default().fg(to_color(theme.hud_text))),
         ]));
     }
-    if area.height >= 9 {
+    if area.height >= 11 {
         let notes = ellipsized_panel_text(&option.notes, area.width.saturating_sub(10) as usize);
         lines.push(Line::from(vec![
             Span::styled("NOTE    ", Style::default().fg(Color::DarkGray)),
@@ -487,6 +533,107 @@ fn render_access_vector(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
         Paragraph::new(lines).block(deck_block("02 // ACCESS VECTOR [RO]", theme)),
         area,
     );
+}
+
+fn render_command_library(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    let popup = centered_rect(area, 86, 76, 62, 18);
+    frame.render_widget(Clear, popup);
+    let commands = app.extended_commands();
+    let selected = app.command_library_index();
+    let mut lines = vec![Line::from(vec![
+        Span::styled("FILTER  ", Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            if app.command_search_active() {
+                format!("/{}▌", app.command_filter())
+            } else if app.command_filter().is_empty() {
+                "/ to search".to_owned()
+            } else {
+                format!("/{}", app.command_filter())
+            },
+            Style::default().fg(to_color(theme.hud_accent)),
+        ),
+    ])];
+    lines.extend(
+        app.visible_extended_commands()
+            .into_iter()
+            .map(|(index, command)| {
+                let active = index == selected;
+                let style = if active {
+                    Style::default()
+                        .fg(to_color(theme.background))
+                        .bg(to_color(theme.active_target))
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(to_color(theme.hud_text))
+                };
+                Line::styled(
+                    format!(
+                        " {} {:02}/{:02}  {:<12}  {} ",
+                        if active { "›" } else { " " },
+                        index + 1,
+                        commands.len(),
+                        format!("{:?}", command.kind).to_uppercase(),
+                        command.label
+                    ),
+                    style,
+                )
+            }),
+    );
+    if let Some(command) = commands.get(selected) {
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::styled("$ ", Style::default().fg(to_color(theme.active_target))),
+            Span::styled(command.command.as_str(), Style::default().fg(Color::White)),
+        ]));
+        lines.push(Line::styled(
+            command.description.as_str(),
+            Style::default().fg(to_color(theme.hud_text)),
+        ));
+    }
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        key_span("↑/↓", theme),
+        hint_span(" select  "),
+        Span::styled(
+            " Y COPY ",
+            Style::default()
+                .fg(to_color(theme.background))
+                .bg(to_color(theme.hud_text))
+                .add_modifier(Modifier::BOLD),
+        ),
+        hint_span("  "),
+        key_span("Esc", theme),
+        hint_span(" close"),
+    ]));
+    let block = deck_block("04 // COMMAND LIBRARY [READ ONLY]", theme)
+        .style(Style::default().bg(to_color(theme.background)));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+fn centered_rect(
+    area: Rect,
+    width_percent: u16,
+    height_percent: u16,
+    min_width: u16,
+    min_height: u16,
+) -> Rect {
+    let width = ((u32::from(area.width) * u32::from(width_percent) / 100) as u16)
+        .max(min_width.min(area.width))
+        .min(area.width);
+    let height = ((u32::from(area.height) * u32::from(height_percent) / 100) as u16)
+        .max(min_height.min(area.height))
+        .min(area.height);
+    Rect::new(
+        area.x + area.width.saturating_sub(width) / 2,
+        area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    )
 }
 
 fn render_inspection(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {

@@ -1,144 +1,185 @@
 # Access Atlas
 
-Access Atlas is a Rust terminal application for visualizing machine and cloud access paths. It loads the demo fixture immediately, reads a separate generated connection cache, and discovers connection metadata from already-installed local tools. Generated commands are always read-only templates: Access Atlas never executes them and never reads credential material.
+[![Access Atlas CI](https://github.com/Idanbot/access-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/Idanbot/access-atlas/actions/workflows/ci.yml)
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust)](https://www.rust-lang.org/)
 
-The demo renders a Braille-dot globe with shaded sea, land, coast, graticule, and thin international-border colors. Its Orbital Command Deck keeps the globe dominant while a three-part rail separates target health, the selected access vector, and the scrollable inspection index. It locks the active target into view, centers its approximate city location, and zooms to city scale. The selected target is the only city shown as a globe label. Every value in the command rail comes from `data/demo-topology.json`, including provider metadata, location provenance, network data, health, uptime, latency, and access commands.
+**See every environment you can reach, understand how access is wired, and get the right command without hunting through five CLIs.**
 
-## Run the demo
+Access Atlas is a local-first terminal control map for infrastructure access. It discovers connection metadata already present in `kubectl`, AWS, gcloud, Azure, Terraform, SSH, Docker, Tailscale, and Cloudflare configuration, then turns it into a searchable geographic inventory with context-aware connect, port-forward, and debug command templates.
 
-From this directory:
+It does not execute generated commands. You inspect and copy them explicitly.
+
+![Access Atlas cycling through mocked infrastructure targets, access routes, and themes](docs/assets/access-atlas-demo.gif)
+
+> The recording uses the repository's entirely mocked topology. Its hosts, addresses, project names, and account identifiers are fictional.
+
+## Why this should exist
+
+Infrastructure access is usually fragmented across kube contexts, cloud profiles, SSH aliases, tunnels, Terraform roots, and tribal knowledge. During an incident, migration, or onboarding session, the expensive question is often not *what tool should I use?* but *what can this workstation reach, through which identity and route, and what is the safest useful command?*
+
+Access Atlas makes that access surface visible:
+
+- **Incident response:** find the relevant target and copy a metadata-correct diagnostic command quickly.
+- **Onboarding and workstation audits:** see which environments are configured, missing, duplicated, or stale.
+- **Context safety:** keep provider, account, project, region, cluster, namespace, and route visible beside every command.
+- **Access cleanup:** compare authored topology with locally discovered connections and expose unlocated or orphaned entries.
+- **Low-risk exploration:** local discovery is the default; online provider inventory is always an explicit action.
+
+The product is intentionally an **operator cockpit and access inventory**, not a credential vault, remote shell, or cloud resource manager.
+
+## Quick start
+
+Requirements: a recent stable Rust toolchain and a terminal with Unicode and true-color support.
 
 ```sh
-cargo run
+git clone https://github.com/Idanbot/access-atlas.git
+cd access-atlas
+cargo run --release
 ```
 
-For a reproducible Docker-only run:
+The app opens immediately with its embedded demo topology. In parallel, it refreshes local connection metadata and reuses a cache no older than 24 hours.
+
+Run an isolated Docker demo:
 
 ```sh
 docker build --tag access-atlas:dev .
 docker run --rm -it access-atlas:dev
 ```
 
-The demo also embeds the fixture, so the compiled binary can fall back to the same data when the default JSON path is not available.
-
-Validate the fixture without opening a terminal UI:
+Validate the fixture without opening the TUI:
 
 ```sh
-docker run --rm access-atlas:dev --validate
+cargo run -- --validate
 ```
+
+## What you can do
+
+### Explore the atlas
+
+The Braille-dot globe keeps the selected target in view while a great-circle uplink traces the source-to-target route. The command deck shows target health, provider and location metadata, the active access vector, and a scrollable inspection index. Unlocated discoveries remain explicitly unlocated instead of receiving a guessed city.
+
+The active target uses a compact center beacon and restrained pulse. Target changes use a pullback/coast/lock camera movement; route sampling adapts to angular distance so long paths remain accurate and smooth.
+
+### Find discovered connections
+
+Press `g` to open the grouped connection browser. Filter by provider with `Tab`/`Shift+Tab`, search labels, kinds, and metadata with `/`, then press `Enter` to focus a target.
+
+Discovery sources:
+
+| Provider | Local metadata | Explicit online inventory |
+| --- | --- | --- |
+| Kubernetes | contexts and namespaces from `kubectl` | — |
+| AWS | configured profiles | EC2 instances |
+| Google Cloud | gcloud configurations | Compute Engine instances |
+| Azure | subscriptions | virtual machines |
+| Terraform | selected roots and workspaces | — |
+| SSH | configured host aliases | — |
+| Docker | contexts | — |
+| Tailscale | peer metadata | — |
+| Cloudflare | Tunnel ingress entries | — |
+
+Local discovery runs in the background. Press uppercase `R` to request read-only provider inventory APIs, `C` to cancel between provider commands, or `R` again to retry a completed, cancelled, or failed refresh. Successful scans remove vanished entries; a failed provider retains its last known cache entries.
+
+Terraform discovery is restricted to the current project unless you add explicit roots with repeatable `--terraform-root PATH`.
+
+### Use command templates
+
+Each resource gets commands matched to its provider, resource kind, and discovered metadata. The first three high-value actions stay one keystroke away with `Tab` and `Shift+Tab`. Press `Enter` on a discovered connection to open its searchable top-10 command library, then `y` to copy the selected command through terminal OSC52.
+
+Access Atlas only renders and copies templates—it never executes them. Typical categories include:
+
+- connect: SSH, SSM, IAP, Azure Bastion, Kubernetes context switching;
+- port-forward: Kubernetes services/pods and provider-specific tunnels where meaningful;
+- debug: logs, describe/status calls, serial output, guest-agent checks, and network diagnostics.
+
+When a generic category is irrelevant, the slot is filled with a more useful provider-specific action instead of a misleading placeholder.
 
 ## Controls
 
 | Key | Action |
 | --- | --- |
-| `Space` | Pause / resume automatic target cycling (paused by default) |
-| `t` | Cycle color theme (Orbital Ice, Tactical Radar, Minimal Atlas, Amber CRT, Deep Space) |
-| `+` / `-` | Zoom camera in / out |
-| `h` / `j` / `k` / `l` | Manual pan / orbit camera in longitude and latitude |
-| `r` | Reset camera to focused target |
-| `Tab` | Next primary command (Connect, Port-forward, Debug where relevant) |
-| `Shift+Tab` | Previous primary command |
-| `Left` / `Right` | Previous or next target |
-| `Up` / `Down` | Move the selected detail row |
-| `Enter` | Open/close the selected discovered connection's top-10 command library |
-| `/` | Search the open command library; `Esc` clears the search or closes it |
-| `y` | Copy the selected command through terminal OSC52; never execute it |
+| `Left` / `Right` | Previous / next target |
+| `Tab` / `Shift+Tab` | Next / previous primary command or browser provider |
+| `Up` / `Down` | Move the selected detail, connection, or command row |
+| `Enter` | Open/close the selected discovered connection's command library |
+| `/` | Search the connection browser or command library |
+| `Esc` | Clear search or close the active overlay |
+| `y` | Copy the selected command with OSC52; never execute it |
+| `g` | Open/close the grouped connection browser |
 | `R` | Explicitly query configured remote provider APIs |
-| `C` | Cancel a refresh after the currently running provider command returns |
-| `g` | Open the grouped connection browser |
-| `q` | Exit |
+| `C` | Cancel refresh after the current provider command returns |
+| `Space` | Pause/resume automatic target cycling (paused by default) |
+| `t` | Cycle five color themes |
+| `+` / `-` | Zoom in/out |
+| `h` / `j` / `k` / `l` | Orbit longitude/latitude |
+| `r` | Recenter on the focused target |
+| `q` | Quit |
 
-Inside the connection browser, `Tab`/`Shift+Tab` cycle provider filters, `/` searches connection labels, kinds, and metadata, and `Enter` focuses the selected target. Located resources are grouped by provider; resources without reliable region metadata appear in explicit `UNLOCATED` sections rather than inheriting the origin's city.
+## Discovery without the TUI
 
-Auto-cycle is paused by default for focused inspection (press `Space` to run). A target change uses a 1.4-second pullback/coast/lock camera move while the great-circle uplink reveals beneath a traveling photon packet and fading tail. Acquisition finishes even when auto-cycle is held, allowing the renderer to become fully idle afterward. Live mode refreshes the settled packet and countdown at a restrained 6 Hz, while camera acquisition uses the faster animation cadence. The active target features a small amber center beacon and a single restrained pulse ring. The uplink adapts its sampling to the source-to-target angular distance so long routes stay smooth without making local hops heavy. The globe displays high-accuracy continent masks (0.25° sampling), dark stippled oceans, an orbital graticule, atmospheric limb glow, and live camera telemetry.
-
-The data hierarchy is:
-
-```text
-target -> network type -> access option
-```
-
-For example, the GCP target has an `SSH` network type with three options, while the Kubernetes target has a separate `Kubernetes` type using `kubectl` and a `Helm` type using `helm`. Changing the network type changes the binary and the route semantics instead of treating every command as another flat SSH variant.
-
-## Connection discovery
-
-At TUI startup, Access Atlas renders a cache no older than 24 hours immediately and refreshes local metadata on a background thread. Press uppercase `R` for an explicit online refresh or `C` to cancel between providers. Progress and errors are reported per provider. `R` retries completed, cancelled, or failed refreshes. Successful scans authoritatively remove connections that disappeared; failed providers retain their last known cache entries. Stable connection IDs are deduplicated.
-
-Supported sources are:
-
-- Kubernetes contexts from `kubectl`
-- AWS profiles and, during online refresh, EC2 instances
-- gcloud configurations and, during online refresh, Compute Engine instances
-- Azure subscriptions and, during online refresh, virtual machines
-- explicitly selected Terraform roots and workspaces
-- SSH config hosts, Docker contexts, Tailscale peers, and Cloudflare Tunnel ingress entries
-
-Terraform discovery is restricted to the current project by default. Add explicit roots with repeatable `--terraform-root PATH`. The scanners retain operational metadata needed by templates but deliberately omit credentials and SSH identity files.
-
-Run a local-only scan without opening the TUI:
+Run a local-only scan and print the generated inventory:
 
 ```sh
 cargo run -- --discover
 ```
 
-Allow provider API calls during a one-shot scan:
+Explicitly allow provider API queries:
 
 ```sh
 cargo run -- --discover --online
 ```
 
-Use `--connections-cache PATH` to override the generated cache and `--discovery-home PATH` to test an isolated home. Defaults can also be set with `ACCESS_ATLAS_CACHE` and `ACCESS_ATLAS_HOME`. The cache is separate from `data/demo-topology.json`; discovery never mutates the authored topology.
-
-Set cache lifetime explicitly with `--cache-max-age-hours HOURS`; zero disables loading cached connections.
-
-### Non-executing acceptance audit
-
-Audit the actual locally configured providers and every generated template without executing any generated command:
+Audit configured providers and every generated template without executing any generated command:
 
 ```sh
 cargo run -- --discover --audit-connections
 ```
 
-The JSON result fails acceptance for duplicate IDs, malformed command sets, multi-line/control-character commands, unresolved override placeholders, or credential-shaped metadata. Missing tools and invalid overrides are warnings so independently working providers remain usable. Add `--online` only when you intentionally want read-only cloud inventory API calls; Access Atlas never creates, changes, starts, or deletes cloud resources.
+Acceptance fails for duplicate IDs, malformed command sets, multiline/control-character commands, unresolved placeholders, or credential-shaped metadata. Missing tools and invalid overrides remain warnings so one provider cannot make the rest unusable.
 
-### Template overrides
+Useful configuration:
 
-The default override path is `~/.config/access-atlas/templates.json`; use `--template-overrides PATH` to select another file. The schema is versioned and matches `provider` plus `resource_kind`. An override can replace a built-in command by `id`, or insert a new command at `position` 1–10. Metadata placeholders such as `{context}`, `{namespace}`, `{profile}`, and `{hostname}` are validated and shell-quoted before insertion. Invalid entries are ignored individually and the safe built-in remains active.
+| Option / variable | Purpose |
+| --- | --- |
+| `--connections-cache PATH` / `ACCESS_ATLAS_CACHE` | Override the generated inventory cache |
+| `--discovery-home PATH` / `ACCESS_ATLAS_HOME` | Use an isolated discovery home |
+| `--cache-max-age-hours HOURS` | Change cache lifetime; `0` disables cache loading |
+| `--terraform-root PATH` | Add an explicit Terraform discovery root |
+| `--template-overrides PATH` | Load versioned command-template overrides |
 
-Preview overrides through the normal discovery JSON or top-10 TUI library:
+Discovery never mutates the authored topology in `data/demo-topology.json`.
 
-```sh
-cargo run -- --discover --template-overrides docs/template-overrides.example.json
-```
+## Template overrides
 
-See [the complete example](docs/template-overrides.example.json).
-
-## Demo data
-
-The fixture includes mocked examples for:
-
-- GCP Compute Engine `e2-micro` in Amsterdam using three IAP/SSH options and serial console access
-- GCP Compute Engine `e2-micro` in Ashburn using three IAP/SSH options and serial console access
-- A Raspberry Pi 4 in Tel Aviv using Cloudflare Access, tunnel, alias, and LAN SSH options
-- Kubernetes API access through `kubectl` plus Helm release inspection in Frankfurt
-- Kubernetes API access through `kubectl` plus Helm release inspection in Tokyo
-- Tailscale SSH, direct tailnet access, status, and network diagnostics in Berlin
-- AWS SSM, API, bastion, and SSH access in Frankfurt
-- Azure CLI, Bastion, VM inventory, and guest-agent access in Dublin
-
-The coastline mask and thin country-border overlay use public-domain [Natural Earth 50m data](https://github.com/nvkelso/natural-earth-vector), embedded in `data/ne_50m_land.json` and `data/ne_50m_boundaries.json`. The renderer converts those source geometries into high-resolution 0.25-degree masks (1440×720) with spatial-grid acceleration, then samples the masks during frames. All addresses are documentation or private addresses, and identifiers are fake. The fixture is not an instruction to connect to any target.
-
-## Docker checks
-
-Run formatting, Clippy, all tests, the isolated multi-provider discovery smoke test, and JSON validation in the Rust Docker image:
+The default override path is `~/.config/access-atlas/templates.json`. Overrides match `provider` plus `resource_kind` and can replace a built-in command by `id` or insert a new command at a position from 1–10. Metadata placeholders such as `{context}`, `{namespace}`, `{profile}`, and `{hostname}` are validated and shell-quoted before insertion. Invalid entries are ignored individually and the safe built-in remains active.
 
 ```sh
-./scripts/docker-check.sh
+cargo run -- --discover \
+  --template-overrides docs/template-overrides.example.json
 ```
 
-The same checks run in GitHub Actions. The project uses the latest versions resolved from crates.io when the lockfile is regenerated; `Cargo.lock` is committed for reproducible checks.
+See the [complete override example](docs/template-overrides.example.json).
 
-## Development quality gate
+## Safety and privacy model
+
+- Generated commands are never run by Access Atlas.
+- Online cloud discovery only happens after `--online` or uppercase `R`.
+- Discovery retains operational metadata but omits credentials and SSH identity-file contents.
+- The inventory cache is separate from the authored demo topology.
+- Template values are validated and shell-quoted before interpolation.
+- Copying is explicit and uses OSC52; there is no hidden shell handoff.
+
+Treat the generated cache as operational metadata: it can contain internal hostnames, account IDs, project names, and topology details. Apply normal workstation file permissions and avoid committing it.
+
+## Demo data and map sources
+
+The embedded fixture models GCP VMs, a Raspberry Pi behind Cloudflare Access, Kubernetes clusters, a Tailscale node, an AWS instance, and an Azure VM. All addresses are documentation/private ranges and all identifiers are fake.
+
+Coastlines and country boundaries use public-domain [Natural Earth 50m data](https://github.com/nvkelso/natural-earth-vector), embedded in `data/ne_50m_land.json` and `data/ne_50m_boundaries.json`. The renderer builds high-resolution masks with spatial-grid acceleration and samples them during frames.
+
+## Development and tests
+
+Run the complete local quality gate:
 
 ```sh
 cargo fmt --all -- --check
@@ -146,3 +187,21 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test --all-targets
 cargo run -- --validate
 ```
+
+Run formatting, Clippy, tests, isolated mock-provider discovery, and JSON validation in Docker:
+
+```sh
+./scripts/docker-check.sh
+```
+
+The Docker smoke test starts from an isolated home and mock executables, so it verifies fresh-install behavior and deterministic discovered connections without requiring real provider accounts. The same checks run in GitHub Actions.
+
+## Highest-value next improvements
+
+1. **Provider adapter contract:** move scanners and templates behind a documented plugin interface so new CLIs can be added without changing the core app.
+2. **Access preflight:** add explicitly requested, non-mutating checks for CLI availability, authentication expiry, DNS, and route prerequisites—while keeping command execution out of scope.
+3. **Resource correlation:** connect the same workload across Terraform state, cloud instances, Kubernetes, SSH, and tunnels, with confidence and provenance for every inferred edge.
+4. **Inventory history and redacted sharing:** show additions/removals over time and export a deliberately redacted snapshot for incident handoff or onboarding review.
+5. **Production distribution:** publish signed binaries, checksums, release notes, and package-manager installs, then add compatibility testing across Linux and macOS terminals.
+
+Those improvements turn the current visual command catalog into a durable access-intelligence layer without turning it into another credential store or remote-execution system.

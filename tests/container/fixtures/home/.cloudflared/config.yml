@@ -1,0 +1,7 @@
+tunnel: 11111111-1111-1111-1111-111111111111
+ingress:
+  - hostname: ssh.example.test
+    service: ssh://localhost:22
+  - hostname: app.example.test
+    service: http://localhost:8080
+  - service: http_status:404

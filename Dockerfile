@@ -1,13 +1,15 @@
-FROM rust:latest
+FROM rust:1.88-bookworm AS build
 
-WORKDIR /workspace
+WORKDIR /src
 COPY . .
+RUN cargo build --locked --release
 
-RUN rustup component add rustfmt clippy \
-    && cargo fmt --all -- --check \
-    && cargo clippy --all-targets --all-features -- -D warnings \
-    && cargo test --test discovery_cli -- --nocapture \
-    && cargo test --all-targets \
-    && cargo run --quiet -- --validate
+FROM debian:bookworm-slim
 
-CMD ["cargo", "run"]
+ENV TERM=xterm-256color \
+    LANG=C.UTF-8
+
+COPY --from=build /src/target/release/access-atlas /usr/local/bin/access-atlas
+
+ENTRYPOINT ["access-atlas"]
+CMD ["--demo-only"]

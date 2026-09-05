@@ -1,7 +1,8 @@
 # Access Atlas
 
 [![Access Atlas CI](https://github.com/Idanbot/access-atlas/actions/workflows/ci.yml/badge.svg)](https://github.com/Idanbot/access-atlas/actions/workflows/ci.yml)
-[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust)](https://www.rust-lang.org/)
+[![Rust](https://img.shields.io/badge/Rust-1.88+-000000?logo=rust)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **See every environment you can reach, understand how access is wired, and get the right command without hunting through five CLIs.**
 
@@ -29,27 +30,27 @@ The product is intentionally an **operator cockpit and access inventory**, not a
 
 ## Quick start
 
-Requirements: a recent stable Rust toolchain and a terminal with Unicode and true-color support.
+Requirements: Rust 1.88+ (edition 2024) and a terminal with Unicode, true-color, and OSC52 clipboard support.
+
+Safe first run — mocked topology only. No cache, no provider CLIs:
 
 ```sh
 git clone https://github.com/Idanbot/access-atlas.git
 cd access-atlas
-cargo run --release
-```
-
-The app opens immediately with its embedded demo topology. In parallel, it refreshes local connection metadata and reuses a cache no older than 24 hours.
-
-Explore only the mocked topology without reading a connection cache or invoking installed provider tools:
-
-```sh
 cargo run --release -- --demo-only
 ```
 
-Run an isolated Docker demo:
+Default run opens the same globe and, in parallel, scans local `kubectl`, cloud, SSH, Docker, Tailscale, and Cloudflare metadata. It does not call provider APIs until you press `R` or pass `--online`.
 
 ```sh
-docker build --tag access-atlas:dev .
-docker run --rm -it access-atlas:dev
+cargo run --release
+```
+
+Isolated Docker demo. No host mounts, no discovery, `--demo-only`:
+
+```sh
+docker build --tag access-atlas:demo .
+docker run --rm -it access-atlas:demo
 ```
 
 Validate the fixture without opening the TUI:
@@ -196,10 +197,18 @@ cargo test --all-targets
 cargo run -- --validate
 ```
 
-Run formatting, Clippy, tests, isolated mock-provider discovery, and JSON validation in Docker:
+Run formatting, Clippy, tests, and JSON validation in a toolchain container:
 
 ```sh
 ./scripts/docker-check.sh
 ```
 
-The Docker smoke test starts from an isolated home and mock executables, so it verifies fresh-install behavior and deterministic discovered connections without requiring real provider accounts. The same checks run in GitHub Actions.
+Mock-provider discovery (isolated home, fake CLIs, no real accounts) lives in `tests/container/` and the Container Discovery GitHub Actions workflow. The root `Dockerfile` is only the `--demo-only` image.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## Security
+
+Report vulnerabilities through [GitHub private reporting](https://github.com/Idanbot/access-atlas/security/advisories/new), not public issues. See [SECURITY.md](SECURITY.md).

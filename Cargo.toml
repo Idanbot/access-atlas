@@ -3,9 +3,12 @@ name = "access-atlas"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Animated read-only topology demo for SSH and cloud access paths"
+description = "Local-first infrastructure access map and command catalog"
 license = "MIT"
+readme = "README.md"
 repository = "https://github.com/Idanbot/access-atlas"
+keywords = ["tui", "infrastructure", "kubernetes", "ssh", "discovery"]
+categories = ["command-line-utilities"]
 
 [dependencies]
 anyhow = "1.0.104"

@@ -533,6 +533,7 @@ impl InventoryCache {
             }
             Err(error) => return Err(error),
         };
+        let _ = restrict_to_owner_rw(&self.path);
         serde_json::from_str(&input).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -560,7 +561,7 @@ impl InventoryCache {
                 format!("serialize inventory cache: {error}"),
             )
         })?;
-        let mut output = fs::File::create(&temporary)?;
+        let mut output = create_private_file(&temporary)?;
         output.write_all(&json)?;
         output.sync_all()?;
         drop(output);
@@ -568,8 +569,43 @@ impl InventoryCache {
             let _ = fs::remove_file(&temporary);
             return Err(error);
         }
+        restrict_to_owner_rw(&self.path)?;
         Ok(())
     }
+}
+
+fn create_private_file(path: &std::path::Path) -> io::Result<fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::File::create(path)
+    }
+}
+
+fn restrict_to_owner_rw(path: &std::path::Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        if permissions.mode() & 0o777 != 0o600 {
+            permissions.set_mode(0o600);
+            fs::set_permissions(path, permissions)?;
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
 }
 
 pub struct DiscoveryService<R> {

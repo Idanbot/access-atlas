@@ -104,3 +104,40 @@ fn generated_inventory_cache_is_atomic_and_independent() {
                 .contains(".tmp"))
     );
 }
+
+#[test]
+fn inventory_cache_is_owner_readable_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sandbox = tempfile::tempdir().expect("sandbox should exist");
+    let path = sandbox.path().join("cache/connections.json");
+    let cache = InventoryCache::new(path.clone());
+    let inventory = DiscoveryService::new(
+        KubectlFixture,
+        DiscoveryConfig::new(PathBuf::from("/tmp/missing"), Vec::new()),
+    )
+    .refresh(DiscoveryMode::Local)
+    .inventory;
+
+    cache.store(&inventory).expect("cache should be stored");
+
+    let mode = std::fs::metadata(&path)
+        .expect("cache should exist")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(mode, 0o600, "fresh cache must not be group/world readable");
+
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
+        .expect("existing cache can be world-readable before upgrade");
+    cache.load_or_default().expect("readable cache should load");
+    let tightened = std::fs::metadata(&path)
+        .expect("cache should exist")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        tightened, 0o600,
+        "loading an existing cache should drop group/world bits"
+    );
+}

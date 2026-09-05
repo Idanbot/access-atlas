@@ -173,11 +173,11 @@ See the [complete override example](docs/template-overrides.example.json).
 - `--demo-only` avoids reading cached connections and invoking provider tools.
 - Online cloud discovery only happens after `--online` or uppercase `R`.
 - Discovery retains operational metadata but omits credentials and SSH identity-file contents.
-- The inventory cache is separate from the authored demo topology.
+- The inventory cache is separate from the authored demo topology and is written owner-read/write only (`0600`).
 - Template values are validated and shell-quoted before interpolation.
 - Copying is explicit and uses OSC52; there is no hidden shell handoff.
 
-Treat the generated cache as operational metadata: it can contain internal hostnames, account IDs, project names, and topology details. Apply normal workstation file permissions and avoid committing it.
+Treat the generated cache as operational metadata: it can contain internal hostnames, account IDs, project names, and topology details. Avoid committing it.
 
 ## Demo data and map sources
 

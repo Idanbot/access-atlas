@@ -110,6 +110,12 @@ fn cache_expiry_and_online_reconciliation_remove_confirmed_stale_resources() {
     assert_eq!(retained.generated_at_unix, old_timestamp);
 }
 
+#[test]
+fn empty_inventory_is_never_stale() {
+    let inventory = ConnectionInventory::default();
+    assert!(!inventory.is_stale_at(u64::MAX, Duration::ZERO));
+}
+
 #[derive(Clone)]
 struct FailedAwsOnlineFixture;
 

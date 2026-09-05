@@ -68,3 +68,40 @@ fn acceptance_audit_rejects_duplicate_ids_and_unsafe_command_lines() {
             .any(|issue| issue.contains("single line"))
     );
 }
+
+#[test]
+fn acceptance_audit_rejects_credential_keys_placeholders_and_empty_commands() {
+    let mut refresh = DiscoveryService::new(
+        KubectlFixture,
+        DiscoveryConfig::new(PathBuf::from("/tmp/missing"), Vec::new()),
+    )
+    .refresh(DiscoveryMode::Local);
+    refresh.inventory.connections[0]
+        .metadata
+        .insert("session_token".to_owned(), "not-a-secret-value".to_owned());
+    refresh.inventory.connections[0].commands[1].command =
+        "kubectl get pods -n {namespace}".to_owned();
+    refresh.inventory.connections[0].commands[2].command.clear();
+
+    let audit = audit_refresh(&refresh);
+
+    assert!(!audit.passed);
+    assert!(
+        audit
+            .issues
+            .iter()
+            .any(|issue| issue.contains("prohibited credential metadata key"))
+    );
+    assert!(
+        audit
+            .issues
+            .iter()
+            .any(|issue| issue.contains("unresolved template placeholder"))
+    );
+    assert!(
+        audit
+            .issues
+            .iter()
+            .any(|issue| issue.contains("empty command"))
+    );
+}

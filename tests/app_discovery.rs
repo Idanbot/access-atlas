@@ -1,14 +1,14 @@
 use access_atlas::{
     app::{App, RefreshState, ThemeId},
     discovery::{
-        CommandRequest, CommandResult, CommandRunner, DiscoveryConfig, DiscoveryEvent,
-        DiscoveryMode, DiscoveryService, Provider, SourceReport, SourceState,
+        CommandRequest, CommandResult, CommandRunner, ConnectionInventory, DiscoveredConnection,
+        DiscoveryConfig, DiscoveryEvent, DiscoveryMode, DiscoveryService, Provider, SourceReport,
+        SourceState,
     },
     model::Topology,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::{io, path::PathBuf};
-
+use std::{collections::BTreeMap, io, path::PathBuf};
 const FIXTURE: &str = include_str!("../data/demo-topology.json");
 
 #[derive(Clone)]
@@ -39,11 +39,8 @@ fn discovered_connection_uses_primary_commands_as_tab_actions() {
     app.previous_target();
     assert_eq!(app.target().label, "prod-eu");
     assert_eq!(app.target().provider, "kubernetes");
-    assert_eq!(app.target().location.city, "Unlocated");
-    assert_eq!(
-        app.target().location.label,
-        "Unlocated · anchored to origin"
-    );
+    assert_eq!(app.target().location.city, "No location");
+    assert_eq!(app.target().location.label, "No location · source unknown");
     assert_eq!(app.current_network_type().access_options.len(), 3);
     assert_eq!(app.current_access_option().label, "Cluster info");
     app.next_access_option();
@@ -54,6 +51,61 @@ fn discovered_connection_uses_primary_commands_as_tab_actions() {
     assert_eq!(app.current_access_option().label, "Cluster info");
     app.previous_access_option();
     assert_eq!(app.current_access_option().label, "Debug workload");
+}
+
+fn target_from_metadata(metadata: BTreeMap<String, String>) -> access_atlas::model::Target {
+    let inventory = ConnectionInventory {
+        schema_version: 1,
+        generated_at_unix: 1,
+        connections: vec![DiscoveredConnection {
+            id: "aws:ec2:probe".to_owned(),
+            label: "probe".to_owned(),
+            provider: Provider::Aws,
+            kind: "ec2-instance".to_owned(),
+            metadata,
+            commands: Vec::new(),
+        }],
+    };
+    let topology = Topology::from_json(FIXTURE).expect("fixture should load");
+    let mut app = App::with_inventory(topology, ThemeId::CyberOrbital, inventory);
+    app.previous_target();
+    app.target().clone()
+}
+
+#[test]
+fn mapped_provider_regions_locate_and_unknown_regions_stay_unlocated() {
+    let east = target_from_metadata(BTreeMap::from([(
+        "region".to_owned(),
+        "us-east-1".to_owned(),
+    )]));
+    assert_eq!(east.location.city, "Ashburn");
+    assert_eq!(east.location.precision, "estimated-region");
+    assert!((east.location.latitude - 39.04).abs() < 0.01);
+    assert!((east.location.longitude - -77.49).abs() < 0.01);
+
+    let zone = target_from_metadata(BTreeMap::from([(
+        "zone".to_owned(),
+        "europe-west4-a".to_owned(),
+    )]));
+    assert_eq!(zone.location.city, "Amsterdam");
+
+    let west = target_from_metadata(BTreeMap::from([(
+        "region".to_owned(),
+        "us-west-2".to_owned(),
+    )]));
+    assert_eq!(west.location.city, "Oregon");
+    assert_eq!(west.location.precision, "estimated-region");
+    assert_eq!(zone.location.precision, "estimated-region");
+
+    let unknown = target_from_metadata(BTreeMap::from([(
+        "region".to_owned(),
+        "not-a-region".to_owned(),
+    )]));
+    assert_eq!(unknown.location.city, "No location");
+    assert_eq!(unknown.location.precision, "none");
+    assert_eq!(unknown.location.label, "No location · source unknown");
+    assert_eq!(unknown.location.latitude, 0.0);
+    assert_eq!(unknown.location.longitude, 0.0);
 }
 
 fn discovered_app() -> App {
@@ -122,8 +174,9 @@ fn uppercase_r_requests_online_refresh_once() {
     let mut app = discovered_app();
 
     app.handle_key(KeyEvent::new(KeyCode::Char('R'), KeyModifiers::SHIFT));
-    assert!(app.take_refresh_request());
-    assert!(!app.take_refresh_request());
+    let scope = app.take_online_scope().expect("scoped online refresh");
+    assert_eq!(scope.providers, Some(vec![Provider::Kubernetes]));
+    assert!(app.take_online_scope().is_none());
     app.mark_refresh_started();
     assert_eq!(app.refresh_state(), &RefreshState::Running);
 }

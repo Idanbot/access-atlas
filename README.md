@@ -40,7 +40,7 @@ cd access-atlas
 cargo run --release -- --demo-only
 ```
 
-Default run opens the same globe and, in parallel, scans local `kubectl`, cloud, SSH, Docker, Tailscale, and Cloudflare metadata. It does not call provider APIs until you press `R` or pass `--online`.
+Default run is origin plus local inventory, not the demo globe. It scans local `kubectl`, cloud, SSH, Docker, Tailscale, and Cloudflare metadata. The inventory pane is the default; press `m` or pass `--globe` for the map. Provider APIs are not called until you press `R` on a selected connection.
 
 ```sh
 cargo run --release
@@ -61,11 +61,9 @@ cargo run -- --validate
 
 ## What you can do
 
-### Explore the atlas
+The default pane is the connection inventory and command deck. Press `m` to show the Braille-dot globe: the selected located target stays in view while a great-circle uplink traces source to estimated region. Unknown geo is labeled **No location** and is not pinned on the origin city. Estimated region comes from a built-in gazetteer or `~/.config/access-atlas/locations.json`. Authored `--data` overlays can mark matched and orphan targets; the live session does not write topology.
 
-The Braille-dot globe keeps the selected target in view while a great-circle uplink traces the source-to-target route. The command deck shows target health, provider and location metadata, the active access vector, and a scrollable inspection index. Unlocated discoveries remain explicitly unlocated instead of receiving a guessed city.
-
-The active target uses a compact center beacon and restrained pulse. Target changes use a pullback/coast/lock camera movement; route sampling adapts to angular distance so long paths remain accurate and smooth.
+Discovered health starts as **NOT PROBED**. Press `P` to run a single explicit `ping`. Demo fixture health stays authored.
 
 ### Find discovered connections
 
@@ -85,21 +83,11 @@ Discovery sources:
 | Tailscale | peer metadata | — |
 | Cloudflare | Tunnel ingress entries | — |
 
-Local discovery runs in the background. Press uppercase `R` to request read-only provider inventory APIs, `C` to cancel between provider commands, or `R` again to retry a completed, cancelled, or failed refresh. Successful scans remove vanished entries; a failed provider retains its last known cache entries.
+Local discovery runs in the background. Press uppercase `R` on a selected connection to query that provider (and profile/configuration/subscription when known). `C` cancels between provider commands. Successful scans remove vanished entries for loaded providers; a failed provider retains its last known cache entries.
 
-Terraform discovery is restricted to the current project unless you add explicit roots with repeatable `--terraform-root PATH`.
+Each resource gets commands matched to its provider, resource kind, and discovered metadata. High-value actions stay one keystroke away with `Tab` and `Shift+Tab`. Press `Enter` on a discovered connection to open its command library, then `y` to copy. Copy uses OSC52 and, when available, the native clipboard (`wl-copy` / `pbcopy` / `xclip`). The footer reports `copied N chars`.
 
-### Use command templates
-
-Each resource gets commands matched to its provider, resource kind, and discovered metadata. The first three high-value actions stay one keystroke away with `Tab` and `Shift+Tab`. Press `Enter` on a discovered connection to open its searchable top-10 command library, then `y` to copy the selected command through terminal OSC52.
-
-Access Atlas only renders and copies templates—it never executes them. Typical categories include:
-
-- connect: SSH, SSM, IAP, Azure Bastion, Kubernetes context switching;
-- port-forward: Kubernetes services/pods and provider-specific tunnels where meaningful;
-- debug: logs, describe/status calls, serial output, guest-agent checks, and network diagnostics.
-
-When a generic category is irrelevant, the slot is filled with a more useful provider-specific action instead of a misleading placeholder.
+Access Atlas only renders and copies templates—it never executes them. `P` is a separate explicit probe, not a generated command.
 
 ## Controls
 
@@ -111,9 +99,11 @@ When a generic category is irrelevant, the slot is filled with a more useful pro
 | `Enter` | Open/close the selected discovered connection's command library |
 | `/` | Search the connection browser or command library |
 | `Esc` | Clear search or close the active overlay |
-| `y` | Copy the selected command with OSC52; never execute it |
-| `g` | Open/close the grouped connection browser |
-| `R` | Explicitly query configured remote provider APIs |
+| `y` | Copy the selected command (OSC52 + native fallback); never execute it |
+| `g` | Open/close the grouped connection browser (globe mode) |
+| `m` | Toggle globe vs inventory pane |
+| `R` | Online refresh for the selected connection's provider |
+| `P` | Probe the selected target with `ping` |
 | `C` | Cancel refresh after the current provider command returns |
 | `Space` | Pause/resume automatic target cycling (paused by default) |
 | `t` | Cycle five color themes |
@@ -142,12 +132,14 @@ Audit configured providers and every generated template without executing any ge
 cargo run -- --discover --audit-connections
 ```
 
-Acceptance fails for duplicate IDs, malformed command sets, multiline/control-character commands, unresolved placeholders, or credential-shaped metadata. Missing tools and invalid overrides remain warnings so one provider cannot make the rest unusable.
+Acceptance fails for duplicate IDs, empty or malformed command sets, multiline/control-character commands, unresolved placeholders, or credential-shaped metadata keys. Missing tools and invalid overrides remain warnings so one provider cannot make the rest unusable.
 
 Useful configuration:
 
 | Option / variable | Purpose |
 | --- | --- |
+| `--data PATH` | Optional authored overlay (matched / orphan); default live run is origin plus inventory |
+| `--globe` | Start with the globe instead of the inventory pane |
 | `--connections-cache PATH` / `ACCESS_ATLAS_CACHE` | Override the generated inventory cache |
 | `--discovery-home PATH` / `ACCESS_ATLAS_HOME` | Use an isolated discovery home |
 | `--demo-only` | Skip the cache and all local/provider discovery |
@@ -155,11 +147,11 @@ Useful configuration:
 | `--terraform-root PATH` | Add an explicit Terraform discovery root |
 | `--template-overrides PATH` | Load versioned command-template overrides |
 
-Discovery never mutates the authored topology in `data/demo-topology.json`.
+Discovery never mutates the authored topology in `data/demo-topology.json`. There is no topology writer; the cache is the durable live document.
 
 ## Template overrides
 
-The default override path is `~/.config/access-atlas/templates.json`. Overrides match `provider` plus `resource_kind` and can replace a built-in command by `id` or insert a new command at a position from 1–10. Metadata placeholders such as `{context}`, `{namespace}`, `{profile}`, and `{hostname}` are validated and shell-quoted before insertion. Invalid entries are ignored individually and the safe built-in remains active.
+The default override path is `~/.config/access-atlas/templates.json`. Overrides match `provider` plus `resource_kind` and can replace a built-in command by `id` or insert a new command at a position. Metadata placeholders such as `{context}`, `{namespace}`, `{profile}`, and `{hostname}` are validated and shell-quoted before insertion. Invalid entries are ignored individually and the safe built-in remains active.
 
 ```sh
 cargo run -- --discover \
@@ -172,11 +164,12 @@ See the [complete override example](docs/template-overrides.example.json).
 
 - Generated commands are never run by Access Atlas.
 - `--demo-only` avoids reading cached connections and invoking provider tools.
-- Online cloud discovery only happens after `--online` or uppercase `R`.
+- Online cloud discovery only happens after `--online` or uppercase `R` on a selected provider.
+- `P` is an explicit one-shot `ping`, separate from generated templates.
 - Discovery retains operational metadata but omits credentials and SSH identity-file contents.
 - The inventory cache is separate from the authored demo topology and is written owner-read/write only (`0600`).
 - Template values are validated and shell-quoted before interpolation.
-- Copying is explicit and uses OSC52; there is no hidden shell handoff.
+- Copying is explicit (OSC52 plus native clipboard when present); there is no shell handoff.
 
 Treat the generated cache as operational metadata: it can contain internal hostnames, account IDs, project names, and topology details. Avoid committing it.
 

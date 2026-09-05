@@ -63,3 +63,47 @@ fn ssh_config_imports_concrete_hosts_without_credentials() {
             .all(|command| command.command.contains("jump-prod"))
     );
 }
+
+#[test]
+fn ssh_aliases_with_metacharacters_are_shell_quoted_in_templates() {
+    let sandbox = tempfile::tempdir().expect("sandbox should exist");
+    fs::create_dir_all(sandbox.path().join(".ssh")).expect("ssh directory should exist");
+    fs::write(
+        sandbox.path().join(".ssh/config"),
+        "Host evil;true\n  HostName 203.0.113.10\n",
+    )
+    .expect("ssh config should be written");
+
+    let report = DiscoveryService::new(
+        NoCommands,
+        DiscoveryConfig::new(sandbox.path().to_owned(), Vec::new()),
+    )
+    .refresh(DiscoveryMode::Local);
+    let connection = report
+        .inventory
+        .connections
+        .iter()
+        .find(|connection| connection.provider == Provider::Ssh)
+        .expect("ssh host should be discovered");
+
+    assert_eq!(connection.label, "evil;true");
+    assert!(
+        connection
+            .commands
+            .iter()
+            .all(|command| command.command.contains("'evil;true'")),
+        "metacharacter aliases must be quoted, got {:?}",
+        connection
+            .commands
+            .iter()
+            .map(|command| command.command.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        connection
+            .commands
+            .iter()
+            .all(|command| !command.command.contains("ssh evil;true")),
+        "unquoted alias would be two shell commands"
+    );
+}

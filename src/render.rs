@@ -146,16 +146,20 @@ pub fn render(frame: &mut Frame, app: &App) {
     let layout = deck_layout(area);
     render_header(frame, layout.header, app, &theme);
 
-    let globe_block = deck_block("00 // ORBITAL VIEW", &theme);
-    let globe_area = globe_block.inner(layout.globe);
-    frame.render_widget(globe_block, layout.globe);
-    frame.render_widget(GlobeWidget { app, theme }, globe_area);
+    if app.globe_visible() {
+        let globe_block = deck_block("00 // ORBITAL VIEW", &theme);
+        let globe_area = globe_block.inner(layout.globe);
+        frame.render_widget(globe_block, layout.globe);
+        frame.render_widget(GlobeWidget { app, theme }, globe_area);
+    } else {
+        render_connection_browser(frame, layout.globe, app, &theme);
+    }
 
     render_command_rail(frame, layout.rail, app, &theme);
     render_footer(frame, layout.footer, app, &theme);
     if app.command_library_open() {
         render_command_library(frame, area, app, &theme);
-    } else if app.connection_browser_open() {
+    } else if app.globe_visible() && app.connection_browser_open() {
         render_connection_browser(frame, area, app, &theme);
     }
 }
@@ -245,23 +249,27 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
     };
     let right = format!("● {cycle_state}  ·  {target_number}");
     let first = spaced_line(title, &right, area.width as usize);
-
+    let rtt = if app.target().status.probed {
+        format!("RTT {:.0}ms", app.target().status.latency_ms)
+    } else {
+        "NOT PROBED".to_owned()
+    };
+    let city = app.target().location.city.as_str();
     let second = if area.width < 96 {
         format!(
-            " MISSION {} // {}/{} // RTT {:.0}MS // {}",
+            " MISSION {} // {}/{} // {} // {}",
             app.topology().name,
-            app.target().location.city,
+            city,
             app.target().location.country,
-            app.target().status.latency_ms,
+            rtt,
             compact_palette_name(theme.name).to_uppercase()
         )
     } else {
         let mission = format!(
-            " MISSION {}  ·  {} / {}  ·  RTT {:.0}ms",
+            " MISSION {}  ·  {} / {}  ·  {rtt}",
             app.topology().name,
-            app.target().location.city,
-            app.target().location.country,
-            app.target().status.latency_ms
+            city,
+            app.target().location.country
         );
         let palette = format!("PALETTE {} ", theme.name.to_uppercase());
         spaced_line(&mission, &palette, area.width as usize)
@@ -336,7 +344,9 @@ fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
     } else {
         'W'
     };
-    let metrics = if area.width < 40 {
+    let metrics = if !target.status.probed {
+        "NOT PROBED  ·  press P".to_owned()
+    } else if area.width < 40 {
         format!(
             "{:.0}ms RTT  ·  {:.1}%  ·  UP {}d",
             target.status.latency_ms,
@@ -350,6 +360,15 @@ fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
             target.status.packet_loss_percent,
             format_uptime_short(target.status.uptime_seconds)
         )
+    };
+    let location_line = if crate::app::App::location_known(target) {
+        format!(
+            "{:.2}°{latitude}  {:.2}°{longitude}",
+            target.location.latitude.abs(),
+            target.location.longitude.abs()
+        )
+    } else {
+        "No location".to_owned()
     };
     let mut lines = vec![
         Line::from(vec![
@@ -376,14 +395,7 @@ fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
             format!("{}  ·  {kind}", target.provider.to_uppercase()),
             Style::default().fg(to_color(theme.hud_text)),
         ),
-        Line::styled(
-            format!(
-                "{:.2}°{latitude}  {:.2}°{longitude}",
-                target.location.latitude.abs(),
-                target.location.longitude.abs()
-            ),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Line::styled(location_line, Style::default().fg(Color::DarkGray)),
         Line::styled(metrics, Style::default().fg(to_color(theme.hud_text))),
     ];
     if area.height >= 8 && app.current_connection().is_some() {
@@ -849,6 +861,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
     lines.push(Line::from(primary_controls));
     if area.height > 1 {
         let mut controls = vec![
+            key_span("m", theme),
+            hint_span(if app.globe_visible() {
+                " globe  "
+            } else {
+                " inventory  "
+            }),
             key_span("h j k l", theme),
             hint_span(" orbit  "),
             key_span("+ / -", theme),
@@ -876,9 +894,17 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
                 }
                 _ => {
                     controls.push(key_span("R", theme));
-                    controls.push(hint_span(" refresh"));
+                    controls.push(hint_span(" online provider  "));
+                    controls.push(key_span("P", theme));
+                    controls.push(hint_span(" probe"));
                 }
             }
+        }
+        if let Some(notice) = app.copy_notice() {
+            controls.push(Span::styled(
+                format!("  {notice}"),
+                Style::default().fg(to_color(theme.hud_accent)),
+            ));
         }
         if !app.refresh_notices().is_empty() {
             controls.push(Span::styled(
@@ -1342,7 +1368,7 @@ fn build_overlays(
     // reveal; after lock, it loops at a restrained ambient cadence. The sample
     // budget follows the actual angular distance so the projected line stays
     // faithful on both short local hops and long intercontinental arcs.
-    if app.route_progress() > 0.0 {
+    if app.route_progress() > 0.0 && crate::app::App::location_known(target) {
         let destination = geo_to_vec(target.location.latitude, target.location.longitude);
         let arc_angle = origin.dot(destination).clamp(-1.0, 1.0).acos();
         let steps = route_sample_count(arc_angle, geometry.radius_x, geometry.radius_y);
@@ -1411,6 +1437,9 @@ fn build_overlays(
 
     // 3. Targets (Active and Inactive targets)
     for (index, target_item) in app.topology().targets.iter().enumerate() {
+        if !crate::app::App::location_known(target_item) {
+            continue;
+        }
         let point = geo_to_vec(
             target_item.location.latitude,
             target_item.location.longitude,
@@ -1861,6 +1890,7 @@ mod tests {
 
     fn test_app() -> App {
         App::new(crate::model::Topology::from_json(FIXTURE).expect("fixture should parse"))
+            .with_globe_visible(true)
     }
 
     fn render_text(width: u16, height: u16) -> String {
@@ -2174,7 +2204,7 @@ mod tests {
 
         let compact = render_text(80, 24);
         for expected in [
-            "RTT 42MS // ORBITAL ICE",
+            "RTT 42ms // ORBITAL ICE",
             "UP 14d",
             "ROUTE   local-workstation",
             "location    Amsterdam",

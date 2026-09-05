@@ -1,9 +1,12 @@
 use crate::{
     discovery::{
         CommandTemplate, ConnectionInventory, DiscoveredConnection, DiscoveryEvent, Provider,
-        RefreshReport, SourceReport, SourceState,
+        RefreshReport, RefreshScope, SourceReport, SourceState,
     },
-    model::{AccessOption, DetailRow, Health, Location, NetworkType, Target, Topology},
+    geo::Gazetteer,
+    model::{
+        AccessOption, DetailRow, Health, Location, MatchStatus, NetworkType, Target, Topology,
+    },
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
@@ -79,6 +82,7 @@ pub struct App {
     base_target_count: usize,
     inventory: ConnectionInventory,
     source_reports: Vec<SourceReport>,
+    gazetteer: Gazetteer,
     target_index: usize,
     network_type_index: usize,
     access_option_index: usize,
@@ -108,13 +112,17 @@ pub struct App {
     connection_query: String,
     connection_search_active: bool,
     discovery_enabled: bool,
+    globe_visible: bool,
     refresh_requested: bool,
+    online_scope: Option<RefreshScope>,
+    probe_requested: bool,
     cancel_requested: bool,
     refresh_state: RefreshState,
     refresh_completed: usize,
     refresh_total: usize,
     refresh_notices: Vec<String>,
     copy_request: Option<String>,
+    copy_notice: Option<String>,
 }
 
 impl App {
@@ -132,21 +140,24 @@ impl App {
         mut inventory: ConnectionInventory,
     ) -> Self {
         inventory.deduplicate();
+        let gazetteer = Gazetteer::default();
         let base_target_count = topology.targets.len();
-        let fallback_location = topology.origin.location.clone();
+        annotate_authored(&mut topology.targets, &inventory);
         topology
             .targets
             .extend(inventory.connections.iter().map(|connection| {
-                connection_target(connection, &fallback_location, inventory.generated_at_unix)
+                connection_target(connection, &gazetteer, inventory.generated_at_unix)
             }));
-        let focus_rotation = target_focus_rotation(&topology.targets[0]);
-        let focus_pitch = target_focus_pitch(&topology.targets[0]);
-        let focus_zoom = target_focus_zoom(&topology.targets[0]);
+        let focus = topology.targets.first();
+        let focus_rotation = focus.map(target_focus_rotation).unwrap_or(0.0);
+        let focus_pitch = focus.map(target_focus_pitch).unwrap_or(0.0);
+        let focus_zoom = focus.map(target_focus_zoom).unwrap_or(1.0);
         Self {
             topology,
             base_target_count,
             inventory,
             source_reports: Vec::new(),
+            gazetteer,
             target_index: 0,
             network_type_index: 0,
             access_option_index: 0,
@@ -176,13 +187,17 @@ impl App {
             connection_query: String::new(),
             connection_search_active: false,
             discovery_enabled: true,
+            globe_visible: false,
             refresh_requested: false,
+            online_scope: None,
+            probe_requested: false,
             cancel_requested: false,
             refresh_state: RefreshState::Idle,
             refresh_completed: 0,
-            refresh_total: 9,
+            refresh_total: 0,
             refresh_notices: Vec::new(),
             copy_request: None,
+            copy_notice: None,
         }
     }
 
@@ -202,6 +217,69 @@ impl App {
 
     pub fn discovery_enabled(&self) -> bool {
         self.discovery_enabled
+    }
+
+    pub fn with_gazetteer(mut self, gazetteer: Gazetteer) -> Self {
+        self.gazetteer = gazetteer;
+        let inventory = self.inventory.clone();
+        self.apply_inventory(inventory);
+        self
+    }
+
+    pub fn with_globe_visible(mut self, visible: bool) -> Self {
+        self.globe_visible = visible;
+        self.dirty = true;
+        self
+    }
+
+    pub fn globe_visible(&self) -> bool {
+        self.globe_visible
+    }
+
+    pub fn copy_notice(&self) -> Option<&str> {
+        self.copy_notice.as_deref()
+    }
+
+    pub fn set_copy_notice(&mut self, notice: impl Into<String>) {
+        self.copy_notice = Some(notice.into());
+        self.dirty = true;
+    }
+
+    pub fn location_known(target: &Target) -> bool {
+        !matches!(target.location.precision.as_str(), "none" | "unknown" | "")
+    }
+
+    pub fn take_online_scope(&mut self) -> Option<RefreshScope> {
+        self.online_scope.take()
+    }
+
+    pub fn take_probe_request(&mut self) -> bool {
+        std::mem::take(&mut self.probe_requested)
+    }
+
+    pub fn apply_probe(&mut self, latency_ms: f64, packet_loss_percent: f64) {
+        if let Some(target) = self.topology.targets.get_mut(self.target_index) {
+            target.status.probed = true;
+            target.status.latency_ms = latency_ms;
+            target.status.packet_loss_percent = packet_loss_percent;
+            target.status.checked_at = "probe".to_owned();
+            target.status.state = if packet_loss_percent >= 100.0 {
+                "unreachable".to_owned()
+            } else {
+                "reachable".to_owned()
+            };
+        }
+        self.dirty = true;
+    }
+
+    pub fn mark_probe_failed(&mut self, message: impl Into<String>) {
+        if let Some(target) = self.topology.targets.get_mut(self.target_index) {
+            target.status.probed = true;
+            target.status.packet_loss_percent = 100.0;
+            target.status.state = "unreachable".to_owned();
+            target.status.checked_at = message.into();
+        }
+        self.dirty = true;
     }
 
     pub fn source_reports(&self) -> &[SourceReport] {
@@ -334,7 +412,7 @@ impl App {
             .targets
             .iter()
             .find(|target| target.id == target_id)
-            .is_some_and(|target| target.location.precision != "unknown")
+            .is_some_and(Self::location_known)
     }
 
     pub fn refresh_state(&self) -> &RefreshState {
@@ -356,7 +434,7 @@ impl App {
     pub fn mark_refresh_started(&mut self) {
         self.refresh_state = RefreshState::Running;
         self.refresh_completed = 0;
-        self.refresh_total = 9;
+        self.refresh_total = 0;
         self.source_reports.clear();
         self.refresh_notices.clear();
         self.dirty = true;
@@ -432,13 +510,18 @@ impl App {
 
     pub fn apply_inventory(&mut self, mut inventory: ConnectionInventory) {
         inventory.deduplicate();
-        let selected_id = self.target().id.clone();
-        let fallback_location = self.topology.origin.location.clone();
+        let selected_id = self
+            .topology
+            .targets
+            .get(self.target_index)
+            .map(|target| target.id.clone())
+            .unwrap_or_default();
         self.topology.targets.truncate(self.base_target_count);
+        annotate_authored(&mut self.topology.targets, &inventory);
         self.topology
             .targets
             .extend(inventory.connections.iter().map(|connection| {
-                connection_target(connection, &fallback_location, inventory.generated_at_unix)
+                connection_target(connection, &self.gazetteer, inventory.generated_at_unix)
             }));
         self.inventory = inventory;
         self.target_index = self
@@ -737,6 +820,14 @@ impl App {
             KeyCode::Char('k') | KeyCode::Char('w') => self.manual_pan(0.0, 0.08),
             KeyCode::Char('j') | KeyCode::Char('s') => self.manual_pan(0.0, -0.08),
             KeyCode::Char('r') => self.reset_camera(),
+            KeyCode::Char('m') => {
+                self.globe_visible = !self.globe_visible;
+                self.dirty = true;
+            }
+            KeyCode::Char('P') if self.discovery_enabled => {
+                self.probe_requested = true;
+                self.dirty = true;
+            }
             KeyCode::Char('R')
                 if self.discovery_enabled
                     && !matches!(
@@ -744,11 +835,11 @@ impl App {
                         RefreshState::Running | RefreshState::Cancelling
                     ) =>
             {
-                self.refresh_requested = true;
-                self.dirty = true;
+                self.request_scoped_online();
             }
             KeyCode::Char('y') => {
                 self.copy_request = Some(self.current_access_option().command.clone());
+                self.copy_notice = None;
                 self.dirty = true;
             }
             KeyCode::Char('g') if !self.inventory.connections.is_empty() => {
@@ -817,6 +908,23 @@ impl App {
                 self.dirty = true;
             }
             KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('m') => {
+                self.globe_visible = !self.globe_visible;
+                self.dirty = true;
+            }
+            KeyCode::Char('P') if self.discovery_enabled => {
+                self.probe_requested = true;
+                self.dirty = true;
+            }
+            KeyCode::Char('R')
+                if self.discovery_enabled
+                    && !matches!(
+                        self.refresh_state,
+                        RefreshState::Running | RefreshState::Cancelling
+                    ) =>
+            {
+                self.request_scoped_online();
+            }
             _ => {}
         }
     }
@@ -1043,6 +1151,44 @@ impl App {
         self.dirty = true;
     }
 
+    fn request_scoped_online(&mut self) {
+        let selected = if self.connection_browser_open {
+            self.visible_connections()
+                .get(self.connection_browser_index)
+                .map(|connection| {
+                    (
+                        connection.provider,
+                        connection
+                            .metadata
+                            .get("profile")
+                            .or_else(|| connection.metadata.get("configuration"))
+                            .or_else(|| connection.metadata.get("subscription_id"))
+                            .cloned(),
+                    )
+                })
+        } else {
+            self.current_connection().map(|connection| {
+                (
+                    connection.provider,
+                    connection
+                        .metadata
+                        .get("profile")
+                        .or_else(|| connection.metadata.get("configuration"))
+                        .or_else(|| connection.metadata.get("subscription_id"))
+                        .cloned(),
+                )
+            })
+        };
+        let Some((provider, profile)) = selected else {
+            return;
+        };
+        self.online_scope = Some(RefreshScope {
+            providers: Some(vec![provider]),
+            profile,
+        });
+        self.dirty = true;
+    }
+
     fn reset_target_animation(&mut self) {
         self.network_type_index = 0;
         self.access_option_index = 0;
@@ -1054,6 +1200,9 @@ impl App {
     }
 
     fn update_camera_focus(&mut self) {
+        if !Self::location_known(self.target()) {
+            return;
+        }
         let target_rotation = target_focus_rotation(self.target());
         let target_pitch = target_focus_pitch(self.target());
         let target_zoom = target_focus_zoom(self.target());
@@ -1075,13 +1224,33 @@ impl App {
     }
 }
 
+fn annotate_authored(targets: &mut [Target], inventory: &ConnectionInventory) {
+    for target in targets {
+        if target.kind == "workstation" || target.id == "local-workstation" {
+            target.match_status = MatchStatus::Source;
+            continue;
+        }
+        let provider = Provider::parse(&target.provider);
+        let matched = inventory.connections.iter().any(|connection| {
+            Some(connection.provider) == provider
+                && (connection.label.eq_ignore_ascii_case(&target.label)
+                    || connection.id.contains(&target.id)
+                    || target.id.contains(&connection.label))
+        });
+        target.match_status = if matched {
+            MatchStatus::Matched
+        } else {
+            MatchStatus::Orphan
+        };
+    }
+}
+
 fn connection_target(
     connection: &DiscoveredConnection,
-    fallback_location: &Location,
+    gazetteer: &Gazetteer,
     generated_at_unix: u64,
 ) -> Target {
-    let mut location = inferred_connection_location(connection, fallback_location);
-    location.source = format!("{} CLI discovery", connection.provider.as_str());
+    let location = inferred_connection_location(connection, gazetteer);
     let state = connection
         .metadata
         .get("power_state")
@@ -1125,6 +1294,10 @@ fn connection_target(
         connection.provider.as_str().to_owned(),
     );
     metadata.insert("discovery.kind".to_owned(), connection.kind.clone());
+    metadata.insert(
+        "match".to_owned(),
+        format!("{:?}", MatchStatus::DiscoveredOnly).to_ascii_lowercase(),
+    );
 
     Target {
         id: format!("discovered:{}", connection.id),
@@ -1138,9 +1311,11 @@ fn connection_target(
             latency_ms: 0.0,
             packet_loss_percent: 0.0,
             checked_at: format!("unix:{generated_at_unix}"),
+            probed: false,
         },
         network: BTreeMap::from([("source".to_owned(), "local-cli".to_owned())]),
         metadata,
+        match_status: MatchStatus::DiscoveredOnly,
         network_types: vec![NetworkType {
             id: "discovered-commands".to_owned(),
             label: format!("{} {}", connection.provider.as_str(), connection.kind),
@@ -1154,48 +1329,31 @@ fn connection_target(
 
 fn inferred_connection_location(
     connection: &DiscoveredConnection,
-    fallback_location: &Location,
+    gazetteer: &Gazetteer,
 ) -> Location {
-    let region = connection
-        .metadata
-        .get("region")
-        .or_else(|| connection.metadata.get("location"))
-        .or_else(|| connection.metadata.get("zone"))
-        .cloned()
-        .unwrap_or_else(|| "unknown".to_owned());
-    let (city, country, latitude, longitude, located) = match region.as_str() {
-        value if value.starts_with("europe-west4") => ("Amsterdam", "NL", 52.37, 4.90, true),
-        value if value.starts_with("eu-west-1") => ("Dublin", "IE", 53.35, -6.26, true),
-        "westeurope" => ("Amsterdam", "NL", 52.37, 4.90, true),
-        value if value.starts_with("us-east-1") => ("Ashburn", "US", 39.04, -77.49, true),
-        value if value.starts_with("asia-northeast1") => ("Tokyo", "JP", 35.68, 139.65, true),
-        _ => (
-            "Unlocated",
-            "--",
-            fallback_location.latitude,
-            fallback_location.longitude,
-            false,
-        ),
-    };
-    Location {
-        label: if located {
-            format!("Provider region {region}")
-        } else {
-            "Unlocated · anchored to origin".to_owned()
+    match gazetteer.locate(connection) {
+        Some(fix) => Location {
+            label: format!("Estimated source · {}", fix.region),
+            region: fix.region,
+            city: fix.city,
+            country: fix.country,
+            timezone: "unknown".to_owned(),
+            source: fix.source.to_owned(),
+            precision: fix.source.to_owned(),
+            latitude: fix.latitude,
+            longitude: fix.longitude,
         },
-        region,
-        city: city.to_owned(),
-        country: country.to_owned(),
-        timezone: "unknown".to_owned(),
-        source: String::new(),
-        precision: if located {
-            "provider-region"
-        } else {
-            "unknown"
-        }
-        .to_owned(),
-        latitude,
-        longitude,
+        None => Location {
+            label: "No location · source unknown".to_owned(),
+            region: "none".to_owned(),
+            city: "No location".to_owned(),
+            country: "--".to_owned(),
+            timezone: "unknown".to_owned(),
+            source: "none".to_owned(),
+            precision: "none".to_owned(),
+            latitude: 0.0,
+            longitude: 0.0,
+        },
     }
 }
 

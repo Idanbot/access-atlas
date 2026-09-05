@@ -33,6 +33,19 @@ pub struct Target {
     pub network: BTreeMap<String, String>,
     pub metadata: BTreeMap<String, String>,
     pub network_types: Vec<NetworkType>,
+    #[serde(default)]
+    pub match_status: MatchStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MatchStatus {
+    #[default]
+    Authored,
+    Source,
+    Matched,
+    Orphan,
+    DiscoveredOnly,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +68,12 @@ pub struct Health {
     pub latency_ms: f64,
     pub packet_loss_percent: f64,
     pub checked_at: String,
+    #[serde(default = "default_probed")]
+    pub probed: bool,
+}
+
+fn default_probed() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Deserialize)]

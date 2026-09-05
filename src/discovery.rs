@@ -18,6 +18,7 @@ use std::{
 pub enum Provider {
     Kubernetes,
     Aws,
+    #[serde(rename = "gcp", alias = "gcloud")]
     Gcloud,
     Azure,
     Terraform,
@@ -32,13 +33,28 @@ impl Provider {
         match self {
             Self::Kubernetes => "kubernetes",
             Self::Aws => "aws",
-            Self::Gcloud => "gcloud",
+            Self::Gcloud => "gcp",
             Self::Azure => "azure",
             Self::Terraform => "terraform",
             Self::Ssh => "ssh",
             Self::Docker => "docker",
             Self::Tailscale => "tailscale",
             Self::Cloudflare => "cloudflare",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "kubernetes" | "k8s" => Some(Self::Kubernetes),
+            "aws" => Some(Self::Aws),
+            "gcp" | "gcloud" => Some(Self::Gcloud),
+            "azure" => Some(Self::Azure),
+            "terraform" => Some(Self::Terraform),
+            "ssh" => Some(Self::Ssh),
+            "docker" => Some(Self::Docker),
+            "tailscale" => Some(Self::Tailscale),
+            "cloudflare" => Some(Self::Cloudflare),
+            _ => None,
         }
     }
 }
@@ -187,6 +203,27 @@ pub enum DiscoveryMode {
     Online,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RefreshScope {
+    pub providers: Option<Vec<Provider>>,
+    pub profile: Option<String>,
+}
+
+impl RefreshScope {
+    pub fn provider(provider: Provider) -> Self {
+        Self {
+            providers: Some(vec![provider]),
+            profile: None,
+        }
+    }
+
+    fn allows(&self, provider: Provider) -> bool {
+        self.providers
+            .as_ref()
+            .is_none_or(|providers| providers.contains(&provider))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SourceState {
@@ -267,12 +304,8 @@ pub fn audit_refresh(refresh: &RefreshReport) -> AcceptanceReport {
         if !connection_ids.insert(connection.id.as_str()) {
             issues.push(format!("duplicate connection id: {}", connection.id));
         }
-        if connection.commands.len() != 10 {
-            issues.push(format!(
-                "{} has {} commands; expected exactly 10",
-                connection.id,
-                connection.commands.len()
-            ));
+        if connection.commands.is_empty() {
+            issues.push(format!("{} has no commands", connection.id));
         }
         let mut command_ids = BTreeSet::new();
         for command in &connection.commands {
@@ -619,28 +652,58 @@ impl<R: CommandRunner> DiscoveryService<R> {
     }
 
     pub fn refresh(&self, mode: DiscoveryMode) -> RefreshReport {
-        self.refresh_with_progress(mode, &CancellationToken::new(), |_| {})
+        self.refresh_scoped(
+            mode,
+            &CancellationToken::new(),
+            RefreshScope::default(),
+            |_| {},
+        )
     }
 
     pub fn refresh_with_progress<F>(
         &self,
         mode: DiscoveryMode,
         cancellation: &CancellationToken,
+        progress: F,
+    ) -> RefreshReport
+    where
+        F: FnMut(DiscoveryEvent),
+    {
+        self.refresh_scoped(mode, cancellation, RefreshScope::default(), progress)
+    }
+
+    pub fn refresh_scoped<F>(
+        &self,
+        mode: DiscoveryMode,
+        cancellation: &CancellationToken,
+        scope: RefreshScope,
         mut progress: F,
     ) -> RefreshReport
     where
         F: FnMut(DiscoveryEvent),
     {
-        const SOURCE_COUNT: usize = 9;
-        progress(DiscoveryEvent::Started {
-            total: SOURCE_COUNT,
-        });
+        let planned = [
+            Provider::Kubernetes,
+            Provider::Aws,
+            Provider::Gcloud,
+            Provider::Azure,
+            Provider::Terraform,
+            Provider::Ssh,
+            Provider::Docker,
+            Provider::Tailscale,
+            Provider::Cloudflare,
+        ]
+        .into_iter()
+        .filter(|provider| scope.allows(*provider))
+        .count();
+        progress(DiscoveryEvent::Started { total: planned });
         let mut connections = Vec::new();
         let mut sources = Vec::new();
+        let profile = scope.profile.as_deref();
 
         macro_rules! scan {
-            ($discovery:expr) => {
-                if !cancellation.is_cancelled() {
+            ($provider:expr, $discovery:expr) => {
+                if scope.allows($provider) && !cancellation.is_cancelled() {
                     let (found, source) = $discovery;
                     connections.extend(found);
                     progress(DiscoveryEvent::Source(source.clone()));
@@ -648,15 +711,18 @@ impl<R: CommandRunner> DiscoveryService<R> {
                 }
             };
         }
-        scan!(discover_kubernetes(&self.runner));
-        scan!(discover_aws(&self.runner, mode));
-        scan!(discover_gcloud(&self.runner, mode));
-        scan!(discover_azure(&self.runner, mode));
-        scan!(discover_terraform(&self.config));
-        scan!(discover_ssh(&self.config));
-        scan!(discover_docker(&self.runner));
-        scan!(discover_tailscale(&self.runner));
-        scan!(discover_cloudflare(&self.config));
+        scan!(Provider::Kubernetes, discover_kubernetes(&self.runner));
+        scan!(Provider::Aws, discover_aws(&self.runner, mode, profile));
+        scan!(
+            Provider::Gcloud,
+            discover_gcloud(&self.runner, mode, profile)
+        );
+        scan!(Provider::Azure, discover_azure(&self.runner, mode, profile));
+        scan!(Provider::Terraform, discover_terraform(&self.config));
+        scan!(Provider::Ssh, discover_ssh(&self.config));
+        scan!(Provider::Docker, discover_docker(&self.runner));
+        scan!(Provider::Tailscale, discover_tailscale(&self.runner));
+        scan!(Provider::Cloudflare, discover_cloudflare(&self.config));
 
         let cancelled = cancellation.is_cancelled();
         let mut inventory = ConnectionInventory {
@@ -755,10 +821,9 @@ fn apply_template_overrides(
                     } else if let Some(position) = entry.position.filter(|position| *position > 0) {
                         let index = (position - 1).min(connection.commands.len());
                         connection.commands.insert(index, command);
-                        connection.commands.truncate(10);
                     } else {
                         notices.push(format!(
-                            "override {} for {}/{} does not replace a built-in command and needs position 1..10",
+                            "override {} for {}/{} does not replace a built-in command and needs a position",
                             entry.id,
                             entry.provider.as_str(),
                             entry.resource_kind
@@ -1037,6 +1102,7 @@ fn kubernetes_commands(context: &str, namespace: &str) -> Vec<CommandTemplate> {
 fn discover_aws<R: CommandRunner>(
     runner: &R,
     mode: DiscoveryMode,
+    profile_filter: Option<&str>,
 ) -> (Vec<DiscoveredConnection>, SourceReport) {
     let request = CommandRequest::new("aws", &["configure", "list-profiles"]);
     let result = match runner.run(&request) {
@@ -1069,6 +1135,7 @@ fn discover_aws<R: CommandRunner>(
         .collect::<Vec<_>>();
     let mut connections = profiles
         .iter()
+        .filter(|profile| profile_filter.is_none_or(|want| want == profile.as_str()))
         .map(|profile| DiscoveredConnection {
             id: format!("aws:profile:{profile}"),
             label: profile.clone(),
@@ -1081,6 +1148,9 @@ fn discover_aws<R: CommandRunner>(
     let mut online_errors = Vec::new();
     if mode == DiscoveryMode::Online {
         for profile in &profiles {
+            if profile_filter.is_some_and(|want| want != profile.as_str()) {
+                continue;
+            }
             match discover_aws_instances(runner, profile) {
                 Ok(instances) => connections.extend(instances),
                 Err(error) => online_errors.push(format!("profile {profile}: {error}")),
@@ -1419,6 +1489,7 @@ struct GcloudCompute {
 fn discover_gcloud<R: CommandRunner>(
     runner: &R,
     mode: DiscoveryMode,
+    profile_filter: Option<&str>,
 ) -> (Vec<DiscoveredConnection>, SourceReport) {
     let request = CommandRequest::new(
         "gcloud",
@@ -1457,6 +1528,11 @@ fn discover_gcloud<R: CommandRunner>(
     let mut connections = Vec::new();
     let mut online_errors = Vec::new();
     for configuration in configurations {
+        if profile_filter.is_some_and(|want| {
+            want != configuration.name && want != configuration.properties.core.project
+        }) {
+            continue;
+        }
         let project = configuration.properties.core.project;
         let zone = configuration.properties.compute.zone;
         let mut metadata = BTreeMap::from([
@@ -1703,6 +1779,7 @@ struct AzureSubscription {
 fn discover_azure<R: CommandRunner>(
     runner: &R,
     mode: DiscoveryMode,
+    profile_filter: Option<&str>,
 ) -> (Vec<DiscoveredConnection>, SourceReport) {
     let request = CommandRequest::new("az", &["account", "list", "--output", "json"]);
     let result = match runner.run(&request) {
@@ -1738,6 +1815,9 @@ fn discover_azure<R: CommandRunner>(
     let mut connections = Vec::new();
     let mut online_errors = Vec::new();
     for subscription in subscriptions {
+        if profile_filter.is_some_and(|want| want != subscription.id && want != subscription.name) {
+            continue;
+        }
         let mut metadata = BTreeMap::from([
             ("subscription_id".to_owned(), subscription.id.clone()),
             ("default".to_owned(), subscription.is_default.to_string()),

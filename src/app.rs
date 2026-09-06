@@ -4,6 +4,7 @@ use crate::{
         RefreshReport, RefreshScope, SourceReport, SourceState,
     },
     geo::Gazetteer,
+    modal::{ConfirmChoice, ConfirmOutcome, ConfirmState, is_actionable_key, wrap_index},
     model::{
         AccessOption, DetailRow, Health, Location, MatchStatus, NetworkType, Target, Topology,
     },
@@ -110,6 +111,7 @@ pub struct App {
     connection_browser_index: usize,
     connection_provider_filter: Option<Provider>,
     connection_query: String,
+    load_prompt: Option<ConfirmState>,
     connection_search_active: bool,
     discovery_enabled: bool,
     globe_visible: bool,
@@ -185,6 +187,7 @@ impl App {
             connection_browser_index: 0,
             connection_provider_filter: None,
             connection_query: String::new(),
+            load_prompt: None,
             connection_search_active: false,
             discovery_enabled: true,
             globe_visible: false,
@@ -230,6 +233,24 @@ impl App {
         self.globe_visible = visible;
         self.dirty = true;
         self
+    }
+
+    pub fn with_load_prompt(mut self) -> Self {
+        self.load_prompt = Some(ConfirmState::default());
+        self.dirty = true;
+        self
+    }
+
+    pub fn load_prompt_open(&self) -> bool {
+        self.load_prompt.is_some()
+    }
+
+    pub fn load_prompt(&self) -> Option<ConfirmState> {
+        self.load_prompt
+    }
+
+    pub fn load_prompt_choice(&self) -> Option<ConfirmChoice> {
+        self.load_prompt.map(|prompt| prompt.selected)
     }
 
     pub fn globe_visible(&self) -> bool {
@@ -762,6 +783,12 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) {
+        if !is_actionable_key(key) {
+            return;
+        }
+        if self.handle_load_prompt_key(key) {
+            return;
+        }
         if key.code == KeyCode::Char('C') && self.refresh_state == RefreshState::Running {
             self.cancel_requested = true;
             self.refresh_state = RefreshState::Cancelling;
@@ -842,14 +869,7 @@ impl App {
                 self.copy_notice = None;
                 self.dirty = true;
             }
-            KeyCode::Char('g') if !self.inventory.connections.is_empty() => {
-                self.connection_browser_open = true;
-                self.connection_browser_index = 0;
-                self.connection_provider_filter = None;
-                self.connection_query.clear();
-                self.connection_search_active = false;
-                self.dirty = true;
-            }
+            KeyCode::Char('g') => self.toggle_connection_browser(),
             KeyCode::Left => self.previous_target(),
             KeyCode::Right => self.next_target(),
             KeyCode::Up => self.previous_detail(),
@@ -871,6 +891,51 @@ impl App {
         }
     }
 
+    fn handle_load_prompt_key(&mut self, key: KeyEvent) -> bool {
+        if self.load_prompt.is_none() {
+            return false;
+        }
+        if key.code == KeyCode::Char('q') {
+            self.quit = true;
+            return true;
+        }
+        let outcome = match key.code {
+            KeyCode::Char('l' | 'L') => ConfirmOutcome::Approved,
+            KeyCode::Char('s' | 'S') => ConfirmOutcome::Declined,
+            _ => self
+                .load_prompt
+                .as_mut()
+                .expect("load prompt is open")
+                .handle_key(key),
+        };
+        match outcome {
+            ConfirmOutcome::Pending => self.dirty = true,
+            ConfirmOutcome::Approved => {
+                self.load_prompt = None;
+                self.refresh_requested = true;
+                self.dirty = true;
+            }
+            ConfirmOutcome::Declined => {
+                self.load_prompt = None;
+                self.dirty = true;
+            }
+        }
+        true
+    }
+
+    fn toggle_connection_browser(&mut self) {
+        if self.connection_browser_open {
+            self.connection_browser_open = false;
+        } else {
+            self.connection_browser_open = true;
+            self.connection_browser_index = 0;
+            self.connection_provider_filter = None;
+            self.connection_query.clear();
+            self.connection_search_active = false;
+        }
+        self.dirty = true;
+    }
+
     fn handle_connection_browser_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc if self.connection_search_active || !self.connection_query.is_empty() => {
@@ -890,8 +955,8 @@ impl App {
             KeyCode::Enter => self.select_browser_connection(),
             KeyCode::Tab => self.cycle_connection_provider(false),
             KeyCode::BackTab => self.cycle_connection_provider(true),
-            KeyCode::Up => self.move_connection_browser(-1),
-            KeyCode::Down => self.move_connection_browser(1),
+            KeyCode::Up | KeyCode::Left => self.move_connection_browser(-1),
+            KeyCode::Down | KeyCode::Right => self.move_connection_browser(1),
             KeyCode::Char('/') if !self.connection_search_active => {
                 self.connection_query.clear();
                 self.connection_search_active = true;
@@ -900,6 +965,10 @@ impl App {
             KeyCode::Backspace if self.connection_search_active => {
                 self.connection_query.pop();
                 self.connection_browser_index = 0;
+                self.dirty = true;
+            }
+            KeyCode::Char('g') if !self.connection_search_active => {
+                self.connection_browser_open = false;
                 self.dirty = true;
             }
             KeyCode::Char(character) if self.connection_search_active => {
@@ -963,11 +1032,8 @@ impl App {
     fn move_connection_browser(&mut self, direction: isize) {
         let count = self.visible_connections().len();
         if count > 0 {
-            self.connection_browser_index = if direction < 0 {
-                (self.connection_browser_index + count - 1) % count
-            } else {
-                (self.connection_browser_index + 1) % count
-            };
+            self.connection_browser_index =
+                wrap_index(self.connection_browser_index, count, direction);
             self.dirty = true;
         }
     }

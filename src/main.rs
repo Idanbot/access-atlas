@@ -254,7 +254,8 @@ fn main() -> Result<()> {
     run_tui(
         App::with_inventory(topology, theme, cached_inventory)
             .with_gazetteer(gazetteer)
-            .with_globe_visible(args.globe),
+            .with_globe_visible(args.globe)
+            .with_load_prompt(),
         Some((discovery_config, inventory_cache)),
     )
 }
@@ -381,15 +382,7 @@ fn event_loop(
     discovery: Option<(DiscoveryConfig, InventoryCache)>,
 ) -> Result<()> {
     let (refresh_tx, refresh_rx) = mpsc::channel();
-    let mut active_cancellation = discovery.as_ref().map(|(config, _)| {
-        app.mark_refresh_started();
-        start_refresh(
-            DiscoveryMode::Local,
-            config.clone(),
-            RefreshScope::default(),
-            refresh_tx.clone(),
-        )
-    });
+    let mut active_cancellation = None;
     let mut last_tick = Instant::now();
     while !app.should_quit() {
         if let Some((_, cache)) = &discovery
@@ -408,6 +401,19 @@ fn event_loop(
         };
         if poll(poll_timeout)? {
             app.handle_event(read()?);
+        }
+        if app.take_refresh_request() {
+            if let Some((config, _)) = &discovery {
+                app.mark_refresh_started();
+                active_cancellation = Some(start_refresh(
+                    DiscoveryMode::Local,
+                    config.clone(),
+                    RefreshScope::default(),
+                    refresh_tx.clone(),
+                ));
+            } else {
+                app.mark_refresh_failed("Discovery is disabled by --demo-only");
+            }
         }
         if let Some(scope) = app.take_online_scope() {
             if let Some((config, _)) = &discovery {

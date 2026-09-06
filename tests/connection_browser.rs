@@ -1,8 +1,8 @@
 use access_atlas::{
     app::{App, ThemeId},
     discovery::{
-        CommandRequest, CommandResult, CommandRunner, DiscoveryConfig, DiscoveryMode,
-        DiscoveryService, Provider,
+        CommandRequest, CommandResult, CommandRunner, ConnectionInventory, DiscoveryConfig,
+        DiscoveryMode, DiscoveryService, Provider,
     },
     model::Topology,
     render,
@@ -67,6 +67,52 @@ fn browser_filters_by_provider_searches_and_selects_connections() {
     app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert!(!app.connection_browser_open());
     assert_eq!(app.target().label, "desktop-linux");
+}
+
+#[test]
+fn g_toggles_a_controllable_browser_even_when_empty() {
+    let mut app = App::with_inventory(
+        Topology::from_json(FIXTURE).expect("topology"),
+        ThemeId::CyberOrbital,
+        ConnectionInventory::default(),
+    );
+    assert!(app.inventory().connections.is_empty());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert!(app.connection_browser_open());
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.connection_browser_index(), 0);
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert!(!app.connection_browser_open());
+}
+
+#[test]
+fn globe_g_overlay_is_keyboard_controlled() {
+    let mut app = app();
+    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    assert!(app.globe_visible());
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    assert!(app.connection_browser_open());
+    assert_eq!(app.connection_browser_index(), 0);
+
+    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.connection_browser_index(), 1);
+    app.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+    assert_eq!(app.connection_browser_index(), 0);
+    app.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+    assert_eq!(app.connection_browser_index(), 1);
+
+    let output = {
+        let backend = TestBackend::new(120, 40);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render::render(frame, &app))
+            .expect("render");
+        buffer_text(terminal.backend().buffer())
+    };
+    assert!(output.contains("CONNECTION BROWSER"));
+    assert!(output.contains("ORBITAL VIEW"));
 }
 
 #[test]

@@ -27,3 +27,12 @@ jobs:
         run: cargo test --all-targets
       - name: Validate demo JSON
         run: cargo run --quiet -- --validate
+
+  mock-connections:
+    name: Discover mocked connections in Docker
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+      - name: Run containerized discovery acceptance test
+        run: ./scripts/test-container-discovery.sh

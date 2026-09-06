@@ -1,4 +1,5 @@
 use crate::app::{App, RefreshState, ThemeId};
+use crate::modal::ConfirmChoice;
 use glam::DVec3;
 use ratatui::{
     Frame,
@@ -157,9 +158,11 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_command_rail(frame, layout.rail, app, &theme);
     render_footer(frame, layout.footer, app, &theme);
-    if app.command_library_open() {
+    if app.load_prompt_open() {
+        render_load_prompt(frame, area, app, &theme);
+    } else if app.command_library_open() {
         render_command_library(frame, area, app, &theme);
-    } else if app.globe_visible() && app.connection_browser_open() {
+    } else if app.connection_browser_open() {
         render_connection_browser(frame, area, app, &theme);
     }
 }
@@ -750,6 +753,63 @@ fn render_connection_browser(frame: &mut Frame, area: Rect, app: &App, theme: &T
             .wrap(Wrap { trim: false }),
         popup,
     );
+}
+
+fn render_load_prompt(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette) {
+    let selected = app.load_prompt_choice().unwrap_or(ConfirmChoice::Approve);
+    let lines = vec![
+        Line::styled(
+            "Scan local CLI metadata for every configured provider?",
+            Style::default().fg(to_color(theme.hud_text)),
+        ),
+        Line::styled(
+            "Approval fetches all workstation connections. Provider APIs stay off until R.",
+            Style::default().fg(Color::DarkGray),
+        ),
+        Line::raw(""),
+        choice_line(
+            selected == ConfirmChoice::Approve,
+            "Load all connections",
+            theme,
+        ),
+        choice_line(selected == ConfirmChoice::Decline, "Skip for now", theme),
+        Line::raw(""),
+        Line::from(vec![
+            key_span("Tab", theme),
+            hint_span(" switch  "),
+            key_span("Enter", theme),
+            hint_span(" confirm  "),
+            key_span("l", theme),
+            hint_span(" load  "),
+            key_span("s", theme),
+            hint_span(" skip  "),
+            key_span("Esc", theme),
+            hint_span(" skip"),
+        ]),
+    ];
+    let popup = centered_rect(area, 72, 42, 58, 12);
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(deck_block("06 // LOAD CONNECTIONS", theme))
+            .wrap(Wrap { trim: false }),
+        popup,
+    );
+}
+
+fn choice_line(active: bool, label: &str, theme: &ThemePalette) -> Line<'static> {
+    let style = if active {
+        Style::default()
+            .fg(to_color(theme.background))
+            .bg(to_color(theme.active_target))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(to_color(theme.hud_text))
+    };
+    Line::styled(
+        format!(" {} {label} ", if active { "›" } else { " " }),
+        style,
+    )
 }
 
 fn centered_rect(

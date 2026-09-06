@@ -40,7 +40,7 @@ cd access-atlas
 cargo run --release -- --demo-only
 ```
 
-Default run is origin plus local inventory, not the demo globe. It scans local `kubectl`, cloud, SSH, Docker, Tailscale, and Cloudflare metadata. The inventory pane is the default; press `m` or pass `--globe` for the map. Provider APIs are not called until you press `R` on a selected connection.
+Default run is origin plus inventory, not the demo globe. On open, a modal asks whether to load connections or skip. Approval fetches all local `kubectl`, cloud, SSH, Docker, Tailscale, and Cloudflare metadata. Skip keeps any cache already on disk and does not scan. The inventory pane is the default; press `m` or pass `--globe` for the map. Provider APIs are not called until you press `R` on a selected connection.
 
 ```sh
 cargo run --release
@@ -67,7 +67,7 @@ Discovered health starts as **NOT PROBED**. Press `P` to run a single explicit `
 
 ### Find discovered connections
 
-Press `g` to open the grouped connection browser. Filter by provider with `Tab`/`Shift+Tab`, search labels, kinds, and metadata with `/`, then press `Enter` to focus a target.
+Press `g` to open a keyboard-controlled connection browser overlay, including when the inventory is empty. `Tab`/`Shift+Tab` filter by provider, `/` searches labels, kinds, and metadata, arrows move the selection, `Enter` focuses a target, and `g` or `Esc` closes the overlay.
 
 Discovery sources:
 
@@ -83,7 +83,7 @@ Discovery sources:
 | Tailscale | peer metadata | — |
 | Cloudflare | Tunnel ingress entries | — |
 
-Local discovery runs in the background. Press uppercase `R` on a selected connection to query that provider (and profile/configuration/subscription when known). `C` cancels between provider commands. Successful scans remove vanished entries for loaded providers; a failed provider retains its last known cache entries.
+Local discovery runs only after you approve the load prompt (or pass `--discover`). Press uppercase `R` on a selected connection to query that provider (and profile/configuration/subscription when known). `C` cancels between provider commands. Successful scans remove vanished entries for loaded providers; a failed provider retains its last known cache entries.
 
 Each resource gets commands matched to its provider, resource kind, and discovered metadata. High-value actions stay one keystroke away with `Tab` and `Shift+Tab`. Press `Enter` on a discovered connection to open its command library, then `y` to copy. Copy uses OSC52 and, when available, the native clipboard (`wl-copy` / `pbcopy` / `xclip`). The footer reports `copied N chars`.
 
@@ -93,14 +93,14 @@ Access Atlas only renders and copies templates—it never executes them. `P` is 
 
 | Key | Action |
 | --- | --- |
-| `Left` / `Right` | Previous / next target |
-| `Tab` / `Shift+Tab` | Next / previous primary command or browser provider |
+| `Left` / `Right` | Previous / next target, or move in the connection browser |
+| `Tab` / `Shift+Tab` | Next / previous primary command, browser provider, or load-prompt choice |
 | `Up` / `Down` | Move the selected detail, connection, or command row |
-| `Enter` | Open/close the selected discovered connection's command library |
+| `Enter` | Confirm the load prompt, focus a browser row, or open/close the command library |
 | `/` | Search the connection browser or command library |
-| `Esc` | Clear search or close the active overlay |
+| `Esc` | Skip the load prompt, clear search, or close the active overlay |
 | `y` | Copy the selected command (OSC52 + native fallback); never execute it |
-| `g` | Open/close the grouped connection browser (globe mode) |
+| `g` | Open/close the grouped connection browser overlay |
 | `m` | Toggle globe vs inventory pane |
 | `R` | Online refresh for the selected connection's provider |
 | `P` | Probe the selected target with `ping` |
@@ -164,6 +164,7 @@ See the [complete override example](docs/template-overrides.example.json).
 
 - Generated commands are never run by Access Atlas.
 - `--demo-only` avoids reading cached connections and invoking provider tools.
+- Local CLI discovery runs only after the load prompt is approved, or with `--discover`. `--demo-only` skips the prompt.
 - Online cloud discovery only happens after `--online` or uppercase `R` on a selected provider.
 - `P` is an explicit one-shot `ping`, separate from generated templates.
 - Discovery retains operational metadata but omits credentials and SSH identity-file contents.
@@ -196,7 +197,7 @@ Run formatting, Clippy, tests, and JSON validation in a toolchain container:
 ./scripts/docker-check.sh
 ```
 
-Mock-provider discovery (isolated home, fake CLIs, no real accounts) lives in `tests/container/` and the Container Discovery GitHub Actions workflow. The root `Dockerfile` is only the `--demo-only` image.
+Mock-provider discovery (isolated home, fake CLIs, no real accounts) lives in `tests/container/` and the `mock-connections` job in Access Atlas CI. The root `Dockerfile` is only the `--demo-only` image.
 
 ## License
 

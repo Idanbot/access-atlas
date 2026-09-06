@@ -83,6 +83,19 @@ fn skipping_leaves_cached_inventory_unfetched() {
 }
 
 #[test]
+fn skip_then_enter_on_empty_inventory_reopens_the_load_prompt() {
+    let mut app = prompt_app();
+    app.handle_key(key(KeyCode::Char('s')));
+    assert!(!app.load_prompt_open());
+
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.load_prompt_open());
+    assert_eq!(app.load_prompt_choice(), Some(ConfirmChoice::Approve));
+    app.handle_key(key(KeyCode::Enter));
+    assert!(app.take_refresh_request());
+}
+
+#[test]
 fn load_and_skip_shortcuts_resolve_the_prompt() {
     let mut load = prompt_app();
     load.handle_key(key(KeyCode::Char('l')));

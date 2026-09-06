@@ -196,6 +196,7 @@ fn refresh_progress_and_cancel_request_are_visible_to_the_event_loop() {
     assert_eq!(app.refresh_progress(), (1, 9));
     assert_eq!(app.source_reports()[0].provider, Provider::Kubernetes);
 
+    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
     app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
     assert!(app.connection_browser_open());
     app.handle_key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::SHIFT));

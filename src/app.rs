@@ -112,6 +112,7 @@ pub struct App {
     connection_provider_filter: Option<Provider>,
     connection_query: String,
     load_prompt: Option<ConfirmState>,
+    load_skipped: bool,
     connection_search_active: bool,
     discovery_enabled: bool,
     globe_visible: bool,
@@ -188,6 +189,7 @@ impl App {
             connection_provider_filter: None,
             connection_query: String::new(),
             load_prompt: None,
+            load_skipped: false,
             connection_search_active: false,
             discovery_enabled: true,
             globe_visible: false,
@@ -836,19 +838,33 @@ impl App {
             self.handle_connection_browser_key(key);
             return;
         }
+        if !self.globe_visible && self.handle_inventory_list_key(key) {
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char(' ') => self.toggle_pause(),
             KeyCode::Char('t') => self.cycle_theme(),
             KeyCode::Char('+') | KeyCode::Char('=') => self.zoom_in(),
             KeyCode::Char('-') | KeyCode::Char('_') => self.zoom_out(),
-            KeyCode::Char('h') | KeyCode::Char('a') => self.manual_pan(-0.1, 0.0),
-            KeyCode::Char('l') | KeyCode::Char('d') => self.manual_pan(0.1, 0.0),
-            KeyCode::Char('k') | KeyCode::Char('w') => self.manual_pan(0.0, 0.08),
-            KeyCode::Char('j') | KeyCode::Char('s') => self.manual_pan(0.0, -0.08),
+            KeyCode::Char('h') | KeyCode::Char('a') if self.globe_visible => {
+                self.manual_pan(-0.1, 0.0)
+            }
+            KeyCode::Char('l') | KeyCode::Char('d') if self.globe_visible => {
+                self.manual_pan(0.1, 0.0)
+            }
+            KeyCode::Char('k') | KeyCode::Char('w') if self.globe_visible => {
+                self.manual_pan(0.0, 0.08)
+            }
+            KeyCode::Char('j') | KeyCode::Char('s') if self.globe_visible => {
+                self.manual_pan(0.0, -0.08)
+            }
             KeyCode::Char('r') => self.reset_camera(),
             KeyCode::Char('m') => {
                 self.globe_visible = !self.globe_visible;
+                if !self.globe_visible {
+                    self.connection_browser_open = false;
+                }
                 self.dirty = true;
             }
             KeyCode::Char('P') if self.discovery_enabled => {
@@ -879,6 +895,7 @@ impl App {
             }
             KeyCode::Tab => self.next_access_option(),
             KeyCode::BackTab => self.previous_access_option(),
+            KeyCode::Enter if self.should_reopen_load_prompt() => self.reopen_load_prompt(),
             KeyCode::Enter if !self.extended_commands().is_empty() => {
                 self.command_library_open = true;
                 self.command_library_index = 0;
@@ -912,11 +929,13 @@ impl App {
             ConfirmOutcome::Pending => self.dirty = true,
             ConfirmOutcome::Approved => {
                 self.load_prompt = None;
+                self.load_skipped = false;
                 self.refresh_requested = true;
                 self.dirty = true;
             }
             ConfirmOutcome::Declined => {
                 self.load_prompt = None;
+                self.load_skipped = true;
                 self.dirty = true;
             }
         }
@@ -924,6 +943,9 @@ impl App {
     }
 
     fn toggle_connection_browser(&mut self) {
+        if !self.globe_visible {
+            return;
+        }
         if self.connection_browser_open {
             self.connection_browser_open = false;
         } else {
@@ -934,6 +956,80 @@ impl App {
             self.connection_search_active = false;
         }
         self.dirty = true;
+    }
+
+    fn should_reopen_load_prompt(&self) -> bool {
+        self.load_skipped
+            && self.discovery_enabled
+            && self.visible_connections().is_empty()
+            && !self.connection_search_active
+    }
+
+    fn reopen_load_prompt(&mut self) {
+        self.load_prompt = Some(ConfirmState::default());
+        self.connection_browser_open = false;
+        self.dirty = true;
+    }
+
+    fn handle_inventory_list_key(&mut self, key: KeyEvent) -> bool {
+        let searching = self.connection_search_active || !self.connection_query.is_empty();
+        let has_rows = !self.visible_connections().is_empty();
+        if !searching && !has_rows && !matches!(key.code, KeyCode::Char('/')) {
+            return false;
+        }
+        match key.code {
+            KeyCode::Esc if searching => {
+                self.connection_query.clear();
+                self.connection_search_active = false;
+                self.connection_browser_index = 0;
+                self.sync_highlighted_connection();
+                true
+            }
+            KeyCode::Enter if self.connection_search_active => {
+                self.connection_search_active = false;
+                self.dirty = true;
+                true
+            }
+            KeyCode::Tab => {
+                self.cycle_connection_provider(false);
+                self.sync_highlighted_connection();
+                true
+            }
+            KeyCode::BackTab => {
+                self.cycle_connection_provider(true);
+                self.sync_highlighted_connection();
+                true
+            }
+            KeyCode::Up | KeyCode::Left if has_rows => {
+                self.move_connection_browser(-1);
+                self.sync_highlighted_connection();
+                true
+            }
+            KeyCode::Down | KeyCode::Right if has_rows => {
+                self.move_connection_browser(1);
+                self.sync_highlighted_connection();
+                true
+            }
+            KeyCode::Char('/') if !self.connection_search_active => {
+                self.connection_query.clear();
+                self.connection_search_active = true;
+                self.dirty = true;
+                true
+            }
+            KeyCode::Backspace if self.connection_search_active => {
+                self.connection_query.pop();
+                self.connection_browser_index = 0;
+                self.sync_highlighted_connection();
+                true
+            }
+            KeyCode::Char(character) if self.connection_search_active => {
+                self.connection_query.push(character);
+                self.connection_browser_index = 0;
+                self.sync_highlighted_connection();
+                true
+            }
+            _ => false,
+        }
     }
 
     fn handle_connection_browser_key(&mut self, key: KeyEvent) {
@@ -952,6 +1048,7 @@ impl App {
                 self.connection_search_active = false;
                 self.dirty = true;
             }
+            KeyCode::Enter if self.should_reopen_load_prompt() => self.reopen_load_prompt(),
             KeyCode::Enter => self.select_browser_connection(),
             KeyCode::Tab => self.cycle_connection_provider(false),
             KeyCode::BackTab => self.cycle_connection_provider(true),
@@ -979,6 +1076,9 @@ impl App {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('m') => {
                 self.globe_visible = !self.globe_visible;
+                if !self.globe_visible {
+                    self.connection_browser_open = false;
+                }
                 self.dirty = true;
             }
             KeyCode::Char('P') if self.discovery_enabled => {
@@ -1036,6 +1136,30 @@ impl App {
                 wrap_index(self.connection_browser_index, count, direction);
             self.dirty = true;
         }
+    }
+
+    fn sync_highlighted_connection(&mut self) {
+        let Some(connection_id) = self
+            .visible_connections()
+            .get(self.connection_browser_index)
+            .map(|connection| connection.id.clone())
+        else {
+            self.dirty = true;
+            return;
+        };
+        let target_id = format!("discovered:{connection_id}");
+        if let Some(index) = self
+            .topology
+            .targets
+            .iter()
+            .position(|target| target.id == target_id)
+            && self.target_index != index
+        {
+            self.target_index = index;
+            self.update_camera_focus();
+            self.reset_target_animation();
+        }
+        self.dirty = true;
     }
 
     fn select_browser_connection(&mut self) {

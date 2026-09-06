@@ -162,7 +162,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         render_load_prompt(frame, area, app, &theme);
     } else if app.command_library_open() {
         render_command_library(frame, area, app, &theme);
-    } else if app.connection_browser_open() {
+    } else if app.globe_visible() && app.connection_browser_open() {
         render_connection_browser(frame, area, app, &theme);
     }
 }
@@ -891,21 +891,35 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
             Style::default().fg(to_color(theme.border_color)),
         ));
     }
-    let mut primary_controls = vec![
-        key_span("←/→", theme),
-        hint_span(" target  "),
-        key_span("Tab", theme),
-        hint_span(" access  "),
-        key_span("↑/↓", theme),
-        hint_span(" inspect  "),
-    ];
+    let inventory_list = !app.globe_visible() && !app.inventory().connections.is_empty();
+    let mut primary_controls = if inventory_list {
+        vec![
+            key_span("↑/↓", theme),
+            hint_span(" list  "),
+            key_span("Tab", theme),
+            hint_span(" provider  "),
+            key_span("Enter", theme),
+            hint_span(" commands  "),
+        ]
+    } else {
+        vec![
+            key_span("←/→", theme),
+            hint_span(" target  "),
+            key_span("Tab", theme),
+            hint_span(" access  "),
+            key_span("↑/↓", theme),
+            hint_span(" inspect  "),
+        ]
+    };
     if app.discovery_enabled() {
-        primary_controls.push(key_span("g", theme));
-        primary_controls.push(hint_span(if app.inventory().connections.is_empty() {
-            " connections (empty)  "
-        } else {
-            " connections  "
-        }));
+        if app.globe_visible() {
+            primary_controls.push(key_span("g", theme));
+            primary_controls.push(hint_span(if app.inventory().connections.is_empty() {
+                " connections (empty)  "
+            } else {
+                " connections  "
+            }));
+        }
     } else {
         primary_controls.push(Span::styled(
             "DEMO ONLY  ",
@@ -927,15 +941,19 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App, theme: &ThemePalette)
             } else {
                 " inventory  "
             }),
-            key_span("h j k l", theme),
-            hint_span(" orbit  "),
+        ];
+        if app.globe_visible() {
+            controls.push(key_span("h j k l", theme));
+            controls.push(hint_span(" orbit  "));
+        }
+        controls.extend([
             key_span("+ / -", theme),
             hint_span(" zoom  "),
             key_span("r", theme),
             hint_span(" recenter  "),
             key_span("t", theme),
             hint_span(" palette  "),
-        ];
+        ]);
         if app.discovery_enabled() {
             match app.refresh_state() {
                 RefreshState::Running => {

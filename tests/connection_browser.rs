@@ -46,10 +46,10 @@ fn app() -> App {
 }
 
 #[test]
-fn browser_filters_by_provider_searches_and_selects_connections() {
+fn inventory_list_is_live_without_opening_an_overlay() {
     let mut app = app();
-    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
-    assert!(app.connection_browser_open());
+    assert!(!app.connection_browser_open());
+    assert!(!app.globe_visible());
     assert_eq!(app.visible_connections().len(), 3);
 
     app.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
@@ -63,27 +63,20 @@ fn browser_filters_by_provider_searches_and_selects_connections() {
     }
     assert_eq!(app.visible_connections().len(), 1);
     assert_eq!(app.visible_connections()[0].label, "desktop-linux");
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-    assert!(!app.connection_browser_open());
     assert_eq!(app.target().label, "desktop-linux");
+    assert!(!app.connection_browser_open());
 }
 
 #[test]
-fn g_toggles_a_controllable_browser_even_when_empty() {
+fn g_does_not_open_an_overlay_in_inventory() {
     let mut app = App::with_inventory(
         Topology::from_json(FIXTURE).expect("topology"),
         ThemeId::CyberOrbital,
         ConnectionInventory::default(),
     );
-    assert!(app.inventory().connections.is_empty());
-
-    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
-    assert!(app.connection_browser_open());
-    app.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    assert_eq!(app.connection_browser_index(), 0);
     app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
     assert!(!app.connection_browser_open());
+    assert!(!app.globe_visible());
 }
 
 #[test]
@@ -113,6 +106,19 @@ fn globe_g_overlay_is_keyboard_controlled() {
     };
     assert!(output.contains("CONNECTION BROWSER"));
     assert!(output.contains("ORBITAL VIEW"));
+    assert_eq!(output.matches("CONNECTION BROWSER").count(), 1);
+}
+
+#[test]
+fn hjkl_orbits_only_on_the_globe() {
+    let mut app = app();
+    let initial = app.focus_rotation();
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+    assert_eq!(app.focus_rotation(), initial);
+
+    app.handle_key(KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE));
+    app.handle_key(KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE));
+    assert_ne!(app.focus_rotation(), initial);
 }
 
 #[test]
@@ -132,8 +138,7 @@ fn inventory_deduplication_keeps_one_stable_connection_id() {
 
 #[test]
 fn browser_render_groups_provider_rows_under_an_unlocated_section() {
-    let mut app = app();
-    app.handle_key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE));
+    let app = app();
     let backend = TestBackend::new(120, 40);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal

@@ -67,7 +67,7 @@ Discovered health starts as **NOT PROBED**. Press `P` to run a single explicit `
 
 ### Find discovered connections
 
-Press `g` to open a keyboard-controlled connection browser overlay, including when the inventory is empty. `Tab`/`Shift+Tab` filter by provider, `/` searches labels, kinds, and metadata, arrows move the selection, `Enter` focuses a target, and `g` or `Esc` closes the overlay.
+The inventory pane is the live connection list: arrows move the selection, `Tab`/`Shift+Tab` filter by provider, `/` searches labels, kinds, and metadata, and `Enter` opens the command library. On the globe, press `g` for the same list as an overlay (`g` or `Esc` closes it). If you skip discovery and the list is empty, `Enter` reopens the load prompt.
 
 Discovery sources:
 
@@ -83,7 +83,7 @@ Discovery sources:
 | Tailscale | peer metadata | — |
 | Cloudflare | Tunnel ingress entries | — |
 
-Local discovery runs only after you approve the load prompt (or pass `--discover`). Press uppercase `R` on a selected connection to query that provider (and profile/configuration/subscription when known). `C` cancels between provider commands. Successful scans remove vanished entries for loaded providers; a failed provider retains its last known cache entries.
+Local discovery runs only after you approve the load prompt (or pass `--discover`). Skip with an empty cache is not a dead end: `Enter` brings the prompt back. Press uppercase `R` on a selected connection to query that provider (and profile/configuration/subscription when known). `C` cancels between provider commands. Successful scans remove vanished entries for loaded providers; a failed provider retains its last known cache entries.
 
 Each resource gets commands matched to its provider, resource kind, and discovered metadata. High-value actions stay one keystroke away with `Tab` and `Shift+Tab`. Press `Enter` on a discovered connection to open its command library, then `y` to copy. Copy uses OSC52 and, when available, the native clipboard (`wl-copy` / `pbcopy` / `xclip`). The footer reports `copied N chars`.
 
@@ -93,14 +93,14 @@ Access Atlas only renders and copies templates—it never executes them. `P` is 
 
 | Key | Action |
 | --- | --- |
-| `Left` / `Right` | Previous / next target, or move in the connection browser |
-| `Tab` / `Shift+Tab` | Next / previous primary command, browser provider, or load-prompt choice |
-| `Up` / `Down` | Move the selected detail, connection, or command row |
-| `Enter` | Confirm the load prompt, focus a browser row, or open/close the command library |
-| `/` | Search the connection browser or command library |
-| `Esc` | Skip the load prompt, clear search, or close the active overlay |
+| `Left` / `Right` | Move the inventory/overlay list, or previous/next target on the globe |
+| `Tab` / `Shift+Tab` | Filter inventory by provider, cycle access on the globe, or switch the load prompt |
+| `Up` / `Down` | Move the selected connection, detail, or command row |
+| `Enter` | Confirm load, reopen load after skip when empty, or open/close the command library |
+| `/` | Search the connection list or command library |
+| `Esc` | Skip/close the load prompt, clear search, or close the globe overlay |
 | `y` | Copy the selected command (OSC52 + native fallback); never execute it |
-| `g` | Open/close the grouped connection browser overlay |
+| `g` | Open/close the connection overlay (globe only; inventory is already the list) |
 | `m` | Toggle globe vs inventory pane |
 | `R` | Online refresh for the selected connection's provider |
 | `P` | Probe the selected target with `ping` |
@@ -108,7 +108,7 @@ Access Atlas only renders and copies templates—it never executes them. `P` is 
 | `Space` | Pause/resume automatic target cycling (paused by default) |
 | `t` | Cycle five color themes |
 | `+` / `-` | Zoom in/out |
-| `h` / `j` / `k` / `l` | Orbit longitude/latitude |
+| `h` / `j` / `k` / `l` | Orbit the globe (globe view only) |
 | `r` | Recenter on the focused target |
 | `q` | Quit |
 

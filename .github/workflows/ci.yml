@@ -11,7 +11,7 @@ jobs:
   quality:
     name: Format, lint, test, and validate demo
     runs-on: ubuntu-latest
-    container: rust:latest
+    container: rust:1.88
     steps:
       - name: Check out source
         uses: actions/checkout@v5
@@ -21,8 +21,6 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Run fresh-install discovery smoke test
-        run: cargo test --test discovery_cli -- --nocapture
       - name: Run tests
         run: cargo test --all-targets
       - name: Validate demo JSON

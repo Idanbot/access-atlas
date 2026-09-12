@@ -268,11 +268,11 @@ impl Target {
         ];
 
         rows.extend(self.network.iter().map(|(key, value)| DetailRow {
-            label: format!("network.{}", key),
+            label: format!("network.{key}"),
             value: value.clone(),
         }));
         rows.extend(self.metadata.iter().map(|(key, value)| DetailRow {
-            label: format!("metadata.{}", key),
+            label: format!("metadata.{key}"),
             value: value.clone(),
         }));
         rows
@@ -291,20 +291,16 @@ fn validate_location(location: &Location, owner: &str) -> Result<()> {
     ] {
         ensure!(
             !value.trim().is_empty(),
-            "{} {} must not be empty",
-            owner,
-            field
+            "{owner} {field} must not be empty"
         );
     }
     ensure!(
         (-90.0..=90.0).contains(&location.latitude),
-        "{} latitude is outside [-90, 90]",
-        owner
+        "{owner} latitude is outside [-90, 90]"
     );
     ensure!(
         (-180.0..=180.0).contains(&location.longitude),
-        "{} longitude is outside [-180, 180]",
-        owner
+        "{owner} longitude is outside [-180, 180]"
     );
     Ok(())
 }
@@ -313,7 +309,7 @@ fn format_uptime(seconds: u64) -> String {
     let days = seconds / 86_400;
     let hours = (seconds % 86_400) / 3_600;
     let minutes = (seconds % 3_600) / 60;
-    format!("{}d {:02}h {:02}m", days, hours, minutes)
+    format!("{days}d {hours:02}h {minutes:02}m")
 }
 
 #[cfg(test)]

@@ -1,4 +1,8 @@
+mod catalog;
+
+use catalog::{command, shell_arg, shell_arg_or_placeholder};
 use serde::{Deserialize, Serialize};
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs, io,
@@ -29,6 +33,18 @@ pub enum Provider {
 }
 
 impl Provider {
+    pub const ALL: [Self; 9] = [
+        Self::Kubernetes,
+        Self::Aws,
+        Self::Gcloud,
+        Self::Azure,
+        Self::Terraform,
+        Self::Ssh,
+        Self::Docker,
+        Self::Tailscale,
+        Self::Cloudflare,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Kubernetes => "kubernetes",
@@ -721,47 +737,25 @@ impl<R: CommandRunner> DiscoveryService<R> {
     where
         F: FnMut(DiscoveryEvent),
     {
-        let planned = [
-            Provider::Kubernetes,
-            Provider::Aws,
-            Provider::Gcloud,
-            Provider::Azure,
-            Provider::Terraform,
-            Provider::Ssh,
-            Provider::Docker,
-            Provider::Tailscale,
-            Provider::Cloudflare,
-        ]
-        .into_iter()
-        .filter(|provider| scope.allows(*provider))
-        .count();
+        let planned = Provider::ALL
+            .into_iter()
+            .filter(|provider| scope.allows(*provider))
+            .count();
         progress(DiscoveryEvent::Started { total: planned });
         let mut connections = Vec::new();
         let mut sources = Vec::new();
         let profile = scope.profile.as_deref();
 
-        macro_rules! scan {
-            ($provider:expr, $discovery:expr) => {
-                if scope.allows($provider) && !cancellation.is_cancelled() {
-                    let (found, source) = $discovery;
-                    connections.extend(found);
-                    progress(DiscoveryEvent::Source(source.clone()));
-                    sources.push(source);
-                }
-            };
+        for provider in Provider::ALL {
+            if !scope.allows(provider) || cancellation.is_cancelled() {
+                continue;
+            }
+            let (found, source) =
+                discover_provider(provider, &self.runner, &self.config, mode, profile);
+            connections.extend(found);
+            progress(DiscoveryEvent::Source(source.clone()));
+            sources.push(source);
         }
-        scan!(Provider::Kubernetes, discover_kubernetes(&self.runner));
-        scan!(Provider::Aws, discover_aws(&self.runner, mode, profile));
-        scan!(
-            Provider::Gcloud,
-            discover_gcloud(&self.runner, mode, profile)
-        );
-        scan!(Provider::Azure, discover_azure(&self.runner, mode, profile));
-        scan!(Provider::Terraform, discover_terraform(&self.config));
-        scan!(Provider::Ssh, discover_ssh(&self.config));
-        scan!(Provider::Docker, discover_docker(&self.runner));
-        scan!(Provider::Tailscale, discover_tailscale(&self.runner));
-        scan!(Provider::Cloudflare, discover_cloudflare(&self.config));
 
         let cancelled = cancellation.is_cancelled();
         let mut inventory = ConnectionInventory {
@@ -790,6 +784,26 @@ impl<R: CommandRunner> DiscoveryService<R> {
             notices,
             cancelled,
         }
+    }
+}
+
+fn discover_provider<R: CommandRunner>(
+    provider: Provider,
+    runner: &R,
+    config: &DiscoveryConfig,
+    mode: DiscoveryMode,
+    profile: Option<&str>,
+) -> (Vec<DiscoveredConnection>, SourceReport) {
+    match provider {
+        Provider::Kubernetes => discover_kubernetes(runner),
+        Provider::Aws => discover_aws(runner, mode, profile),
+        Provider::Gcloud => discover_gcloud(runner, mode, profile),
+        Provider::Azure => discover_azure(runner, mode, profile),
+        Provider::Terraform => discover_terraform(config),
+        Provider::Ssh => discover_ssh(config),
+        Provider::Docker => discover_docker(runner),
+        Provider::Tailscale => discover_tailscale(runner),
+        Provider::Cloudflare => discover_cloudflare(config),
     }
 }
 
@@ -2964,42 +2978,6 @@ fn cloudflare_commands(hostname: &str, service: &str, tunnel: &str) -> Vec<Comma
                 "Inspect the public TLS certificate chain.",
             ),
         ]
-    }
-}
-
-fn command(
-    id: &str,
-    label: &str,
-    kind: ActionKind,
-    command: String,
-    description: &str,
-) -> CommandTemplate {
-    CommandTemplate {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        kind,
-        command,
-        description: description.to_owned(),
-    }
-}
-
-fn shell_arg(value: &str) -> String {
-    if !value.is_empty()
-        && value
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || "-._/:@".contains(character))
-    {
-        value.to_owned()
-    } else {
-        format!("'{}'", value.replace('\'', "'\\''"))
-    }
-}
-
-fn shell_arg_or_placeholder(value: &str, placeholder: &str) -> String {
-    if value.is_empty() {
-        placeholder.to_owned()
-    } else {
-        shell_arg(value)
     }
 }
 

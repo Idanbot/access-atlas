@@ -478,15 +478,7 @@ fn start_refresh(
 fn apply_probe(app: &mut App) {
     let host = app
         .current_connection()
-        .and_then(|connection| {
-            connection
-                .metadata
-                .get("public_ip")
-                .or_else(|| connection.metadata.get("hostname"))
-                .or_else(|| connection.metadata.get("internal_ip"))
-                .or_else(|| connection.metadata.get("ip"))
-                .cloned()
-        })
+        .and_then(|connection| connection.probe_host().map(str::to_owned))
         .or_else(|| Some(app.target().location.city.clone()));
     let Some(host) = host.filter(|value| value != "No location") else {
         app.mark_probe_failed("no probe host");

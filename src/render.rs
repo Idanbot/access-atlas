@@ -364,7 +364,7 @@ fn render_target_status(frame: &mut Frame, area: Rect, app: &App, theme: &ThemeP
             format_uptime_short(target.status.uptime_seconds)
         )
     };
-    let location_line = if crate::app::App::location_known(target) {
+    let location_line = if target.location_known() {
         format!(
             "{:.2}°{latitude}  {:.2}°{longitude}",
             target.location.latitude.abs(),
@@ -1446,7 +1446,7 @@ fn build_overlays(
     // reveal; after lock, it loops at a restrained ambient cadence. The sample
     // budget follows the actual angular distance so the projected line stays
     // faithful on both short local hops and long intercontinental arcs.
-    if app.route_progress() > 0.0 && crate::app::App::location_known(target) {
+    if app.route_progress() > 0.0 && target.location_known() {
         let destination = geo_to_vec(target.location.latitude, target.location.longitude);
         let arc_angle = origin.dot(destination).clamp(-1.0, 1.0).acos();
         let steps = route_sample_count(arc_angle, geometry.radius_x, geometry.radius_y);
@@ -1515,7 +1515,7 @@ fn build_overlays(
 
     // 3. Targets (Active and Inactive targets)
     for (index, target_item) in app.topology().targets.iter().enumerate() {
-        if !crate::app::App::location_known(target_item) {
+        if !target_item.location_known() {
             continue;
         }
         let point = geo_to_vec(

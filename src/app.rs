@@ -4,14 +4,13 @@ use crate::{
         RefreshReport, RefreshScope, SourceReport, SourceState,
     },
     geo::Gazetteer,
+    inventory,
     modal::{ConfirmChoice, ConfirmOutcome, ConfirmState, is_actionable_key, wrap_index},
-    model::{
-        AccessOption, DetailRow, Health, Location, MatchStatus, NetworkType, Target, Topology,
-    },
+    model::{AccessOption, DetailRow, NetworkType, Target, Topology},
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeSet,
     f64::consts::{PI, TAU},
     time::Duration,
 };
@@ -145,12 +144,7 @@ impl App {
         inventory.deduplicate();
         let gazetteer = Gazetteer::default();
         let base_target_count = topology.targets.len();
-        annotate_authored(&mut topology.targets, &inventory);
-        topology
-            .targets
-            .extend(inventory.connections.iter().map(|connection| {
-                connection_target(connection, &gazetteer, inventory.generated_at_unix)
-            }));
+        inventory::sync_topology(&mut topology, base_target_count, &inventory, &gazetteer);
         let focus = topology.targets.first();
         let focus_rotation = focus.map(target_focus_rotation).unwrap_or(0.0);
         let focus_pitch = focus.map(target_focus_pitch).unwrap_or(0.0);
@@ -268,10 +262,6 @@ impl App {
         self.dirty = true;
     }
 
-    pub fn location_known(target: &Target) -> bool {
-        !matches!(target.location.precision.as_str(), "none" | "unknown" | "")
-    }
-
     pub fn take_online_scope(&mut self) -> Option<RefreshScope> {
         self.online_scope.take()
     }
@@ -317,7 +307,7 @@ impl App {
     }
 
     pub fn current_connection(&self) -> Option<&DiscoveredConnection> {
-        let id = self.target().id.strip_prefix("discovered:")?;
+        let id = inventory::connection_id_from_target(&self.target().id)?;
         self.inventory
             .connections
             .iter()
@@ -430,12 +420,12 @@ impl App {
     }
 
     pub fn connection_is_located(&self, connection: &DiscoveredConnection) -> bool {
-        let target_id = format!("discovered:{}", connection.id);
+        let target_id = inventory::discovered_target_id(&connection.id);
         self.topology
             .targets
             .iter()
             .find(|target| target.id == target_id)
-            .is_some_and(Self::location_known)
+            .is_some_and(Target::location_known)
     }
 
     pub fn refresh_state(&self) -> &RefreshState {
@@ -539,13 +529,12 @@ impl App {
             .get(self.target_index)
             .map(|target| target.id.clone())
             .unwrap_or_default();
-        self.topology.targets.truncate(self.base_target_count);
-        annotate_authored(&mut self.topology.targets, &inventory);
-        self.topology
-            .targets
-            .extend(inventory.connections.iter().map(|connection| {
-                connection_target(connection, &self.gazetteer, inventory.generated_at_unix)
-            }));
+        inventory::sync_topology(
+            &mut self.topology,
+            self.base_target_count,
+            &inventory,
+            &self.gazetteer,
+        );
         self.inventory = inventory;
         self.target_index = self
             .topology
@@ -1345,36 +1334,17 @@ impl App {
         let selected = if self.connection_browser_open {
             self.visible_connections()
                 .get(self.connection_browser_index)
-                .map(|connection| {
-                    (
-                        connection.provider,
-                        connection
-                            .metadata
-                            .get("profile")
-                            .or_else(|| connection.metadata.get("configuration"))
-                            .or_else(|| connection.metadata.get("subscription_id"))
-                            .cloned(),
-                    )
-                })
+                .map(|connection| (connection.provider, connection.online_profile()))
         } else {
-            self.current_connection().map(|connection| {
-                (
-                    connection.provider,
-                    connection
-                        .metadata
-                        .get("profile")
-                        .or_else(|| connection.metadata.get("configuration"))
-                        .or_else(|| connection.metadata.get("subscription_id"))
-                        .cloned(),
-                )
-            })
+            self.current_connection()
+                .map(|connection| (connection.provider, connection.online_profile()))
         };
         let Some((provider, profile)) = selected else {
             return;
         };
         self.online_scope = Some(RefreshScope {
             providers: Some(vec![provider]),
-            profile,
+            profile: profile.map(str::to_owned),
         });
         self.dirty = true;
     }
@@ -1390,7 +1360,7 @@ impl App {
     }
 
     fn update_camera_focus(&mut self) {
-        if !Self::location_known(self.target()) {
+        if !self.target().location_known() {
             return;
         }
         let target_rotation = target_focus_rotation(self.target());
@@ -1411,139 +1381,6 @@ impl App {
             elapsed: Duration::ZERO,
             duration: Duration::from_millis(1_400),
         });
-    }
-}
-
-fn annotate_authored(targets: &mut [Target], inventory: &ConnectionInventory) {
-    for target in targets {
-        if target.kind == "workstation" || target.id == "local-workstation" {
-            target.match_status = MatchStatus::Source;
-            continue;
-        }
-        let provider = Provider::parse(&target.provider);
-        let matched = inventory.connections.iter().any(|connection| {
-            Some(connection.provider) == provider
-                && (connection.label.eq_ignore_ascii_case(&target.label)
-                    || connection.id.contains(&target.id)
-                    || target.id.contains(&connection.label))
-        });
-        target.match_status = if matched {
-            MatchStatus::Matched
-        } else {
-            MatchStatus::Orphan
-        };
-    }
-}
-
-fn connection_target(
-    connection: &DiscoveredConnection,
-    gazetteer: &Gazetteer,
-    generated_at_unix: u64,
-) -> Target {
-    let location = inferred_connection_location(connection, gazetteer);
-    let state = connection
-        .metadata
-        .get("power_state")
-        .or_else(|| connection.metadata.get("state"))
-        .or_else(|| connection.metadata.get("status"))
-        .cloned()
-        .unwrap_or_else(|| {
-            if connection
-                .metadata
-                .get("online")
-                .is_some_and(|value| value == "true")
-            {
-                "reachable".to_owned()
-            } else {
-                "discovered".to_owned()
-            }
-        });
-    let primary = connection.primary_commands();
-    let binary = primary
-        .first()
-        .and_then(|command| command.command.split_whitespace().next())
-        .unwrap_or(connection.provider.as_str())
-        .to_owned();
-    let access_options = primary
-        .into_iter()
-        .map(|command| AccessOption {
-            id: command.id.clone(),
-            label: command.label.clone(),
-            command: command.command.clone(),
-            route: vec![
-                "local-workstation".to_owned(),
-                connection.provider.as_str().to_owned(),
-                connection.label.clone(),
-            ],
-            notes: command.description.clone(),
-        })
-        .collect();
-    let mut metadata = connection.metadata.clone();
-    metadata.insert(
-        "discovery.provider".to_owned(),
-        connection.provider.as_str().to_owned(),
-    );
-    metadata.insert("discovery.kind".to_owned(), connection.kind.clone());
-    metadata.insert(
-        "match".to_owned(),
-        format!("{:?}", MatchStatus::DiscoveredOnly).to_ascii_lowercase(),
-    );
-
-    Target {
-        id: format!("discovered:{}", connection.id),
-        label: connection.label.clone(),
-        kind: connection.kind.clone(),
-        provider: connection.provider.as_str().to_owned(),
-        location,
-        status: Health {
-            state,
-            uptime_seconds: 0,
-            latency_ms: 0.0,
-            packet_loss_percent: 0.0,
-            checked_at: format!("unix:{generated_at_unix}"),
-            probed: false,
-        },
-        network: BTreeMap::from([("source".to_owned(), "local-cli".to_owned())]),
-        metadata,
-        match_status: MatchStatus::DiscoveredOnly,
-        network_types: vec![NetworkType {
-            id: "discovered-commands".to_owned(),
-            label: format!("{} {}", connection.provider.as_str(), connection.kind),
-            binary,
-            description: "Read-only command templates generated from discovered metadata."
-                .to_owned(),
-            access_options,
-        }],
-    }
-}
-
-fn inferred_connection_location(
-    connection: &DiscoveredConnection,
-    gazetteer: &Gazetteer,
-) -> Location {
-    match gazetteer.locate(connection) {
-        Some(fix) => Location {
-            label: format!("Estimated source · {}", fix.region),
-            region: fix.region,
-            city: fix.city,
-            country: fix.country,
-            timezone: "unknown".to_owned(),
-            source: fix.source.to_owned(),
-            precision: fix.source.to_owned(),
-            latitude: fix.latitude,
-            longitude: fix.longitude,
-        },
-        None => Location {
-            label: "No location · source unknown".to_owned(),
-            region: "none".to_owned(),
-            city: "No location".to_owned(),
-            country: "--".to_owned(),
-            timezone: "unknown".to_owned(),
-            source: "none".to_owned(),
-            precision: "none".to_owned(),
-            latitude: 0.0,
-            longitude: 0.0,
-        },
     }
 }
 

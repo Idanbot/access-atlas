@@ -208,6 +208,10 @@ impl Topology {
 }
 
 impl Target {
+    pub fn location_known(&self) -> bool {
+        !matches!(self.location.precision.as_str(), "none" | "unknown" | "")
+    }
+
     pub fn detail_rows(&self) -> Vec<DetailRow> {
         let mut rows = vec![
             DetailRow {

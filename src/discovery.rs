@@ -116,6 +116,45 @@ impl DiscoveredConnection {
         }
         selected
     }
+
+    pub fn health_state(&self) -> String {
+        self.metadata
+            .get("power_state")
+            .or_else(|| self.metadata.get("state"))
+            .or_else(|| self.metadata.get("status"))
+            .cloned()
+            .unwrap_or_else(|| {
+                if self
+                    .metadata
+                    .get("online")
+                    .is_some_and(|value| value == "true")
+                {
+                    "reachable".to_owned()
+                } else {
+                    "discovered".to_owned()
+                }
+            })
+    }
+
+    pub fn probe_host(&self) -> Option<&str> {
+        ["public_ip", "hostname", "internal_ip", "ip"]
+            .into_iter()
+            .find_map(|key| {
+                self.metadata
+                    .get(key)
+                    .map(String::as_str)
+                    .filter(|value| !value.is_empty() && *value != "No location")
+            })
+    }
+
+    pub fn online_profile(&self) -> Option<&str> {
+        self.metadata
+            .get("profile")
+            .or_else(|| self.metadata.get("configuration"))
+            .or_else(|| self.metadata.get("subscription_id"))
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

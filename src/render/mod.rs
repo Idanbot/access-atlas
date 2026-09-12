@@ -1,4 +1,8 @@
+mod view;
+
 use crate::app::{App, RefreshState, ThemeId};
+use view::GlobeView;
+
 use crate::modal::ConfirmChoice;
 use glam::DVec3;
 use ratatui::{
@@ -151,7 +155,13 @@ pub fn render(frame: &mut Frame, app: &App) {
         let globe_block = deck_block("00 // ORBITAL VIEW", &theme);
         let globe_area = globe_block.inner(layout.globe);
         frame.render_widget(globe_block, layout.globe);
-        frame.render_widget(GlobeWidget { app, theme }, globe_area);
+        frame.render_widget(
+            GlobeWidget {
+                view: GlobeView::from_app(app),
+                theme,
+            },
+            globe_area,
+        );
     } else {
         render_connection_browser(frame, layout.globe, app, &theme);
     }
@@ -1105,13 +1115,13 @@ fn scale_color_as_color(background: [u8; 3], tint: [u8; 3]) -> Color {
 }
 
 struct GlobeWidget<'a> {
-    app: &'a App,
+    view: GlobeView<'a>,
     theme: ThemePalette,
 }
 
 impl Widget for GlobeWidget<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        render_globe(area, buf, self.app, &self.theme);
+        render_globe(area, buf, self.view, &self.theme);
     }
 }
 
@@ -1163,7 +1173,7 @@ struct DotSample {
     priority: u8,
 }
 
-fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
+fn render_globe(area: Rect, buf: &mut Buffer, view: GlobeView<'_>, theme: &ThemePalette) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -1173,16 +1183,16 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
     let geometry = GlobeGeometry {
         center_x: pixel_width as f64 * 0.46,
         center_y: pixel_height as f64 * 0.51,
-        radius_x: (pixel_width as f64 * 0.365 * app.zoom()).max(1.0),
-        radius_y: (pixel_height as f64 * 0.365 * app.zoom()).max(1.0),
-        rotation: app.rotation(),
-        pitch: app.pitch(),
-        rotation_cos: app.rotation().cos(),
-        rotation_sin: app.rotation().sin(),
-        pitch_cos: app.pitch().cos(),
-        pitch_sin: app.pitch().sin(),
+        radius_x: (pixel_width as f64 * 0.365 * view.zoom).max(1.0),
+        radius_y: (pixel_height as f64 * 0.365 * view.zoom).max(1.0),
+        rotation: view.rotation,
+        pitch: view.pitch,
+        rotation_cos: view.rotation.cos(),
+        rotation_sin: view.rotation.sin(),
+        pitch_cos: view.pitch.cos(),
+        pitch_sin: view.pitch.sin(),
     };
-    let (points, rings, segments) = build_overlays(app, &geometry, theme);
+    let (points, rings, segments) = build_overlays(view, &geometry, theme);
     let overlay = rasterize_overlays(pixel_width, pixel_height, &points, &rings, &segments);
 
     for cell_y in 0..area.height as usize {
@@ -1217,21 +1227,21 @@ fn render_globe(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
         }
     }
 
-    render_city_label(area, buf, app, &geometry, theme);
-    render_telemetry_hud(area, buf, app, theme);
+    render_city_label(area, buf, view, &geometry, theme);
+    render_telemetry_hud(area, buf, view, theme);
 }
 
 fn render_city_label(
     area: Rect,
     buf: &mut Buffer,
-    app: &App,
+    view: GlobeView<'_>,
     geometry: &GlobeGeometry,
     theme: &ThemePalette,
 ) {
     if area.width < 24 || area.height < 9 {
         return;
     }
-    let target = app.target();
+    let target = view.target();
     let point = geo_to_vec(target.location.latitude, target.location.longitude);
     let Some((x, y, _depth)) = project_vec_camera(
         point,
@@ -1294,14 +1304,14 @@ fn render_city_label(
     }
 }
 
-fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePalette) {
+fn render_telemetry_hud(area: Rect, buf: &mut Buffer, view: GlobeView<'_>, theme: &ThemePalette) {
     if area.width < 28 || area.height < 5 {
         return;
     }
 
-    let lat = app.camera_pitch_deg();
+    let lat = view.pitch_deg();
     let lat_dir = if lat >= 0.0 { "N" } else { "S" };
-    let lon = app.camera_azimuth_deg();
+    let lon = view.azimuth_deg();
     let lon_dir = if lon <= 180.0 { "E" } else { "W" };
     let lon_val = if lon <= 180.0 { lon } else { 360.0 - lon };
 
@@ -1312,7 +1322,7 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
             lon_dir,
             lat.abs(),
             lat_dir,
-            app.zoom()
+            view.zoom
         )
     } else {
         format!(
@@ -1321,7 +1331,7 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
             lon_dir,
             lat.abs(),
             lat_dir,
-            app.zoom()
+            view.zoom
         )
     };
     draw_clipped(
@@ -1350,19 +1360,19 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
         );
     }
 
-    let filled = (app.route_progress() * 8.0).round() as usize;
+    let filled = (view.route_progress * 8.0).round() as usize;
     let route_meter = format!(
         "UPLINK [{}{}] {:03}%",
         "■".repeat(filled.min(8)),
         "·".repeat(8_usize.saturating_sub(filled)),
-        (app.route_progress() * 100.0).round() as u8
+        (view.route_progress * 100.0).round() as u8
     );
-    let bot_right = if app.is_paused() {
+    let bot_right = if view.paused {
         "AUTO // HOLD".to_owned()
     } else {
         format!(
             "AUTO // LIVE {:03.1}s",
-            (6.0 - app.elapsed().as_secs_f64()).max(0.0)
+            (6.0 - view.elapsed.as_secs_f64()).max(0.0)
         )
     };
     let bot_right_len = bot_right.chars().count() as u16;
@@ -1385,7 +1395,7 @@ fn render_telemetry_hud(area: Rect, buf: &mut Buffer, app: &App, theme: &ThemePa
             bottom_y,
             &bot_right,
             Style::default()
-                .fg(if app.is_paused() {
+                .fg(if view.paused {
                     to_color(theme.hud_text)
                 } else {
                     to_color(theme.hud_accent)
@@ -1409,7 +1419,7 @@ fn draw_clipped(buf: &mut Buffer, area: Rect, x: u16, y: u16, content: &str, sty
 }
 
 fn build_overlays(
-    app: &App,
+    view: GlobeView<'_>,
     geometry: &GlobeGeometry,
     theme: &ThemePalette,
 ) -> (Vec<PointMarker>, Vec<RingMarker>, Vec<RouteSegment>) {
@@ -1417,10 +1427,10 @@ fn build_overlays(
     let mut rings = Vec::with_capacity(8);
     let mut segments = Vec::with_capacity(64);
 
-    let target = app.target();
+    let target = view.target();
     let origin = geo_to_vec(
-        app.topology().origin.location.latitude,
-        app.topology().origin.location.longitude,
+        view.origin.location.latitude,
+        view.origin.location.longitude,
     );
 
     // 1. Workstation Origin Marker (Clean compact beacon)
@@ -1446,15 +1456,15 @@ fn build_overlays(
     // reveal; after lock, it loops at a restrained ambient cadence. The sample
     // budget follows the actual angular distance so the projected line stays
     // faithful on both short local hops and long intercontinental arcs.
-    if app.route_progress() > 0.0 && target.location_known() {
+    if view.route_progress > 0.0 && target.location_known() {
         let destination = geo_to_vec(target.location.latitude, target.location.longitude);
         let arc_angle = origin.dot(destination).clamp(-1.0, 1.0).acos();
         let steps = route_sample_count(arc_angle, geometry.radius_x, geometry.radius_y);
-        let visible_steps = (steps as f32 * app.route_progress()).ceil() as usize;
-        let packet_step = if app.route_progress() < 0.995 {
+        let visible_steps = (steps as f32 * view.route_progress).ceil() as usize;
+        let packet_step = if view.route_progress < 0.995 {
             visible_steps.min(steps)
         } else {
-            let packet_phase = (app.continuous_time().as_secs_f64() * 0.24).fract();
+            let packet_phase = (view.continuous_time.as_secs_f64() * 0.24).fract();
             (packet_phase * steps as f64).round() as usize
         };
 
@@ -1514,7 +1524,7 @@ fn build_overlays(
     }
 
     // 3. Targets (Active and Inactive targets)
-    for (index, target_item) in app.topology().targets.iter().enumerate() {
+    for (index, target_item) in view.targets.iter().enumerate() {
         if !target_item.location_known() {
             continue;
         }
@@ -1531,7 +1541,7 @@ fn build_overlays(
             geometry.radius_x,
             geometry.radius_y,
         ) {
-            let active = index == app.target_index();
+            let active = index == view.selected;
             if active {
                 // A small, crisp center keeps the lock readable without
                 // obscuring the underlying map detail.
@@ -1545,7 +1555,7 @@ fn build_overlays(
 
                 // One restrained pulse gives the selected target a beacon-like
                 // cadence while keeping the reticle compact at terminal scale.
-                let t = app.continuous_time().as_secs_f64();
+                let t = view.continuous_time.as_secs_f64();
                 let phase = (t * 0.72).fract();
                 let radius = 1.15 + phase * 2.35;
                 let fade = smoother_fade(phase) * 0.72;
@@ -1964,7 +1974,7 @@ mod tests {
     use crossterm::event::Event;
     use ratatui::{Terminal, backend::TestBackend};
 
-    const FIXTURE: &str = include_str!("../data/demo-topology.json");
+    const FIXTURE: &str = include_str!("../../data/demo-topology.json");
 
     fn test_app() -> App {
         App::new(crate::model::Topology::from_json(FIXTURE).expect("fixture should parse"))
@@ -2005,7 +2015,7 @@ mod tests {
     #[test]
     fn target_focus_heading_places_city_marker_on_visible_hemisphere() {
         let topology =
-            crate::model::Topology::from_json(include_str!("../data/demo-topology.json"))
+            crate::model::Topology::from_json(include_str!("../../data/demo-topology.json"))
                 .expect("fixture should parse");
         let target = &topology.targets[0];
         let rotation = target.location.longitude.to_radians();
@@ -2121,7 +2131,8 @@ mod tests {
             pitch_sin: app.pitch().sin(),
         };
 
-        let (points, rings, _segments) = build_overlays(&app, &geometry, &theme);
+        let (points, rings, _segments) =
+            build_overlays(GlobeView::from_app(&app), &geometry, &theme);
         assert_eq!(
             rings.len(),
             1,
@@ -2169,13 +2180,15 @@ mod tests {
             pitch_cos: app.pitch().cos(),
             pitch_sin: app.pitch().sin(),
         };
-        let (partial_points, _rings, partial_segments) = build_overlays(&app, &geometry, &theme);
+        let (partial_points, _rings, partial_segments) =
+            build_overlays(GlobeView::from_app(&app), &geometry, &theme);
         assert!(!partial_segments.is_empty());
         assert!(partial_points.iter().any(|point| point.priority == 5));
 
         app.tick(std::time::Duration::from_secs(1));
         assert_eq!(app.route_progress(), 1.0);
-        let (locked_points, _rings, locked_segments) = build_overlays(&app, &geometry, &theme);
+        let (locked_points, _rings, locked_segments) =
+            build_overlays(GlobeView::from_app(&app), &geometry, &theme);
         assert!(locked_segments.len() >= partial_segments.len());
         assert!(locked_points.iter().any(|point| point.priority == 5));
     }
@@ -2200,7 +2213,7 @@ mod tests {
             pitch_cos: app.pitch().cos(),
             pitch_sin: app.pitch().sin(),
         };
-        let (_, _, segments) = build_overlays(&app, &geometry, &theme);
+        let (_, _, segments) = build_overlays(GlobeView::from_app(&app), &geometry, &theme);
         let origin = geo_to_vec(
             app.topology().origin.location.latitude,
             app.topology().origin.location.longitude,

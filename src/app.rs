@@ -1,5 +1,5 @@
 use crate::{
-    camera::{Camera, shortest_angle},
+    camera::Camera,
     discovery::{
         CommandTemplate, ConnectionInventory, DiscoveredConnection, DiscoveryEvent, Provider,
         RefreshReport, RefreshScope, SourceReport, SourceState,
@@ -1286,6 +1286,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::camera::shortest_angle;
     use crate::model::Topology;
     use crossterm::event::{KeyEvent, KeyEventKind, KeyEventState};
 

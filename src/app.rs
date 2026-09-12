@@ -1,4 +1,5 @@
 use crate::{
+    camera::{Camera, shortest_angle},
     discovery::{
         CommandTemplate, ConnectionInventory, DiscoveredConnection, DiscoveryEvent, Provider,
         RefreshReport, RefreshScope, SourceReport, SourceState,
@@ -7,13 +8,10 @@ use crate::{
     inventory,
     modal::{ConfirmChoice, ConfirmOutcome, ConfirmState, is_actionable_key, wrap_index},
     model::{AccessOption, DetailRow, NetworkType, Target, Topology},
+    overlay::Overlay,
 };
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-use std::{
-    collections::BTreeSet,
-    f64::consts::{PI, TAU},
-    time::Duration,
-};
+use std::{collections::BTreeSet, time::Duration};
 
 const AMBIENT_FRAME_MS: u128 = 160;
 
@@ -49,18 +47,6 @@ impl ThemeId {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct CameraTransition {
-    pub start_rotation: f64,
-    pub target_rotation: f64,
-    pub start_pitch: f64,
-    pub target_pitch: f64,
-    pub start_zoom: f64,
-    pub target_zoom: f64,
-    pub elapsed: Duration,
-    pub duration: Duration,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum RefreshState {
     #[default]
@@ -91,26 +77,18 @@ pub struct App {
     continuous_time: Duration,
     route_elapsed: Duration,
     route_progress: f32,
-    rotation: f64,
-    focus_rotation: f64,
-    pitch: f64,
-    focus_pitch: f64,
-    zoom: f64,
-    focus_zoom: f64,
-    transition: Option<CameraTransition>,
+    camera: Camera,
     paused: bool,
     theme: ThemeId,
     dirty: bool,
     quit: bool,
-    command_library_open: bool,
+    overlay: Overlay,
     command_library_index: usize,
     command_filter: String,
     command_search_active: bool,
-    connection_browser_open: bool,
     connection_browser_index: usize,
     connection_provider_filter: Option<Provider>,
     connection_query: String,
-    load_prompt: Option<ConfirmState>,
     load_skipped: bool,
     connection_search_active: bool,
     discovery_enabled: bool,
@@ -145,10 +123,7 @@ impl App {
         let gazetteer = Gazetteer::default();
         let base_target_count = topology.targets.len();
         inventory::sync_topology(&mut topology, base_target_count, &inventory, &gazetteer);
-        let focus = topology.targets.first();
-        let focus_rotation = focus.map(target_focus_rotation).unwrap_or(0.0);
-        let focus_pitch = focus.map(target_focus_pitch).unwrap_or(0.0);
-        let focus_zoom = focus.map(target_focus_zoom).unwrap_or(1.0);
+        let camera = Camera::focused_on(topology.targets.first());
         Self {
             topology,
             base_target_count,
@@ -163,26 +138,18 @@ impl App {
             continuous_time: Duration::ZERO,
             route_elapsed: Duration::ZERO,
             route_progress: 0.0,
-            rotation: focus_rotation,
-            focus_rotation,
-            pitch: focus_pitch,
-            focus_pitch,
-            zoom: focus_zoom,
-            focus_zoom,
-            transition: None,
+            camera,
             paused: true,
             theme,
             dirty: true,
             quit: false,
-            command_library_open: false,
+            overlay: Overlay::None,
             command_library_index: 0,
             command_filter: String::new(),
             command_search_active: false,
-            connection_browser_open: false,
             connection_browser_index: 0,
             connection_provider_filter: None,
             connection_query: String::new(),
-            load_prompt: None,
             load_skipped: false,
             connection_search_active: false,
             discovery_enabled: true,
@@ -232,21 +199,21 @@ impl App {
     }
 
     pub fn with_load_prompt(mut self) -> Self {
-        self.load_prompt = Some(ConfirmState::default());
+        self.overlay = Overlay::LoadPrompt(ConfirmState::default());
         self.dirty = true;
         self
     }
 
     pub fn load_prompt_open(&self) -> bool {
-        self.load_prompt.is_some()
+        self.overlay.load_prompt().is_some()
     }
 
     pub fn load_prompt(&self) -> Option<ConfirmState> {
-        self.load_prompt
+        self.overlay.load_prompt()
     }
 
     pub fn load_prompt_choice(&self) -> Option<ConfirmChoice> {
-        self.load_prompt.map(|prompt| prompt.selected)
+        self.overlay.load_prompt_choice()
     }
 
     pub fn globe_visible(&self) -> bool {
@@ -349,7 +316,7 @@ impl App {
     }
 
     pub fn command_library_open(&self) -> bool {
-        self.command_library_open
+        self.overlay.is_command_library()
     }
 
     pub fn command_library_index(&self) -> usize {
@@ -357,7 +324,7 @@ impl App {
     }
 
     pub fn connection_browser_open(&self) -> bool {
-        self.connection_browser_open
+        self.overlay.is_connection_browser()
     }
 
     pub fn connection_browser_index(&self) -> usize {
@@ -542,7 +509,7 @@ impl App {
             .iter()
             .position(|target| target.id == selected_id)
             .unwrap_or(0);
-        self.command_library_open = false;
+        self.overlay = Overlay::None;
         self.command_library_index = 0;
         self.command_filter.clear();
         self.command_search_active = false;
@@ -629,27 +596,27 @@ impl App {
     }
 
     pub fn rotation(&self) -> f64 {
-        self.rotation
+        self.camera.rotation()
     }
 
     pub fn focus_rotation(&self) -> f64 {
-        self.focus_rotation
+        self.camera.focus_rotation()
     }
 
     pub fn pitch(&self) -> f64 {
-        self.pitch
+        self.camera.pitch()
     }
 
     pub fn focus_pitch(&self) -> f64 {
-        self.focus_pitch
+        self.camera.focus_pitch()
     }
 
     pub fn zoom(&self) -> f64 {
-        self.zoom
+        self.camera.zoom()
     }
 
     pub fn focus_zoom(&self) -> f64 {
-        self.focus_zoom
+        self.camera.focus_zoom()
     }
 
     pub fn is_paused(&self) -> bool {
@@ -661,11 +628,11 @@ impl App {
     }
 
     pub fn camera_azimuth_deg(&self) -> f64 {
-        self.rotation.to_degrees().rem_euclid(360.0)
+        self.camera.azimuth_deg()
     }
 
     pub fn camera_pitch_deg(&self) -> f64 {
-        self.pitch.to_degrees()
+        self.camera.pitch_deg()
     }
 
     pub fn should_quit(&self) -> bool {
@@ -681,11 +648,7 @@ impl App {
     }
 
     pub fn is_animating(&self) -> bool {
-        self.route_progress < 1.0
-            || self.transition.is_some()
-            || shortest_angle(self.focus_rotation - self.rotation).abs() > 0.001
-            || (self.focus_pitch - self.pitch).abs() > 0.001
-            || (self.focus_zoom - self.zoom).abs() > 0.001
+        self.route_progress < 1.0 || self.camera.is_settling()
     }
 
     pub fn tick(&mut self, delta: Duration) {
@@ -700,48 +663,8 @@ impl App {
         let route_t = (self.route_elapsed.as_secs_f32() / 1.2).min(1.0);
         self.route_progress = 1.0 - (1.0 - route_t).powi(3);
 
-        if let Some(mut trans) = self.transition {
-            trans.elapsed += delta;
-            let t = (trans.elapsed.as_secs_f64() / trans.duration.as_secs_f64()).clamp(0.0, 1.0);
-
-            // A fast lock acquisition followed by a gentle settle keeps target changes
-            // decisive without introducing a hard camera stop.
-            let s = smootherstep(t);
-            let rot_delta = shortest_angle(trans.target_rotation - trans.start_rotation);
-            self.rotation = trans.start_rotation + rot_delta * s;
-            let pitch_delta = trans.target_pitch - trans.start_pitch;
-            self.pitch = trans.start_pitch + pitch_delta * s;
-
-            // Pull back quickly to establish the route, coast briefly, then push into
-            // the destination as rotation settles. The three phases are continuous.
-            let overview_zoom = (trans.start_zoom.min(trans.target_zoom) * 0.68).max(0.68);
-            self.zoom = if t < 0.26 {
-                let pullback = 1.0 - (1.0 - t / 0.26).powi(3);
-                lerp(trans.start_zoom, overview_zoom, pullback)
-            } else if t < 0.42 {
-                overview_zoom
-            } else {
-                let push_in = smootherstep((t - 0.42) / 0.58);
-                lerp(overview_zoom, trans.target_zoom, push_in)
-            };
-
-            if t >= 1.0 {
-                self.rotation = trans.target_rotation;
-                self.pitch = trans.target_pitch;
-                self.zoom = trans.target_zoom;
-                self.transition = None;
-            } else {
-                self.transition = Some(trans);
-            }
+        if self.camera.tick(delta) {
             self.dirty = true;
-        } else {
-            self.rotation = approach_angle(
-                self.rotation,
-                self.focus_rotation,
-                delta.as_secs_f64() * 2.4,
-            );
-            self.pitch = approach_angle(self.pitch, self.focus_pitch, delta.as_secs_f64() * 2.4);
-            self.zoom = approach_value(self.zoom, self.focus_zoom, delta.as_secs_f64() * 0.8);
         }
 
         if !self.paused && self.elapsed >= Duration::from_secs(6) {
@@ -762,7 +685,7 @@ impl App {
     }
 
     pub fn is_transitioning(&self) -> bool {
-        self.transition.is_some()
+        self.camera.is_transitioning()
     }
 
     pub fn handle_event(&mut self, event: Event) {
@@ -786,7 +709,7 @@ impl App {
             self.dirty = true;
             return;
         }
-        if self.command_library_open {
+        if self.overlay.is_command_library() {
             match key.code {
                 KeyCode::Esc if self.command_search_active || !self.command_filter.is_empty() => {
                     self.command_filter.clear();
@@ -795,7 +718,7 @@ impl App {
                     self.dirty = true;
                 }
                 KeyCode::Esc | KeyCode::Enter if !self.command_search_active => {
-                    self.command_library_open = false;
+                    self.overlay = Overlay::None;
                     self.dirty = true;
                 }
                 KeyCode::Enter => {
@@ -823,7 +746,7 @@ impl App {
             }
             return;
         }
-        if self.connection_browser_open {
+        if self.overlay.is_connection_browser() {
             self.handle_connection_browser_key(key);
             return;
         }
@@ -852,7 +775,7 @@ impl App {
             KeyCode::Char('m') => {
                 self.globe_visible = !self.globe_visible;
                 if !self.globe_visible {
-                    self.connection_browser_open = false;
+                    self.overlay = Overlay::None;
                 }
                 self.dirty = true;
             }
@@ -886,7 +809,7 @@ impl App {
             KeyCode::BackTab => self.previous_access_option(),
             KeyCode::Enter if self.should_reopen_load_prompt() => self.reopen_load_prompt(),
             KeyCode::Enter if !self.extended_commands().is_empty() => {
-                self.command_library_open = true;
+                self.overlay = Overlay::CommandLibrary;
                 self.command_library_index = 0;
                 self.command_filter.clear();
                 self.command_search_active = false;
@@ -898,7 +821,7 @@ impl App {
     }
 
     fn handle_load_prompt_key(&mut self, key: KeyEvent) -> bool {
-        if self.load_prompt.is_none() {
+        if self.overlay.load_prompt().is_none() {
             return false;
         }
         if key.code == KeyCode::Char('q') {
@@ -909,21 +832,21 @@ impl App {
             KeyCode::Char('l' | 'L') => ConfirmOutcome::Approved,
             KeyCode::Char('s' | 'S') => ConfirmOutcome::Declined,
             _ => self
-                .load_prompt
-                .as_mut()
+                .overlay
+                .load_prompt_mut()
                 .expect("load prompt is open")
                 .handle_key(key),
         };
         match outcome {
             ConfirmOutcome::Pending => self.dirty = true,
             ConfirmOutcome::Approved => {
-                self.load_prompt = None;
+                self.overlay = Overlay::None;
                 self.load_skipped = false;
                 self.refresh_requested = true;
                 self.dirty = true;
             }
             ConfirmOutcome::Declined => {
-                self.load_prompt = None;
+                self.overlay = Overlay::None;
                 self.load_skipped = true;
                 self.dirty = true;
             }
@@ -935,10 +858,10 @@ impl App {
         if !self.globe_visible {
             return;
         }
-        if self.connection_browser_open {
-            self.connection_browser_open = false;
+        if self.overlay.is_connection_browser() {
+            self.overlay = Overlay::None;
         } else {
-            self.connection_browser_open = true;
+            self.overlay = Overlay::ConnectionBrowser;
             self.connection_browser_index = 0;
             self.connection_provider_filter = None;
             self.connection_query.clear();
@@ -955,8 +878,7 @@ impl App {
     }
 
     fn reopen_load_prompt(&mut self) {
-        self.load_prompt = Some(ConfirmState::default());
-        self.connection_browser_open = false;
+        self.overlay = Overlay::LoadPrompt(ConfirmState::default());
         self.dirty = true;
     }
 
@@ -1030,7 +952,7 @@ impl App {
                 self.dirty = true;
             }
             KeyCode::Esc => {
-                self.connection_browser_open = false;
+                self.overlay = Overlay::None;
                 self.dirty = true;
             }
             KeyCode::Enter if self.connection_search_active => {
@@ -1054,7 +976,7 @@ impl App {
                 self.dirty = true;
             }
             KeyCode::Char('g') if !self.connection_search_active => {
-                self.connection_browser_open = false;
+                self.overlay = Overlay::None;
                 self.dirty = true;
             }
             KeyCode::Char(character) if self.connection_search_active => {
@@ -1066,7 +988,7 @@ impl App {
             KeyCode::Char('m') => {
                 self.globe_visible = !self.globe_visible;
                 if !self.globe_visible {
-                    self.connection_browser_open = false;
+                    self.overlay = Overlay::None;
                 }
                 self.dirty = true;
             }
@@ -1167,7 +1089,7 @@ impl App {
             .position(|target| target.id == target_id)
         {
             self.target_index = index;
-            self.connection_browser_open = false;
+            self.overlay = Overlay::None;
             self.update_camera_focus();
             self.reset_target_animation();
         }
@@ -1238,8 +1160,7 @@ impl App {
         if self.is_transitioning() {
             return;
         }
-        self.focus_zoom = (self.focus_zoom * 1.18).min(3.5);
-        self.zoom = self.focus_zoom;
+        self.camera.zoom_in();
         self.dirty = true;
     }
 
@@ -1247,8 +1168,7 @@ impl App {
         if self.is_transitioning() {
             return;
         }
-        self.focus_zoom = (self.focus_zoom / 1.18).max(0.6);
-        self.zoom = self.focus_zoom;
+        self.camera.zoom_out();
         self.dirty = true;
     }
 
@@ -1256,9 +1176,7 @@ impl App {
         if self.is_transitioning() {
             return;
         }
-        self.focus_rotation = (self.focus_rotation + delta_rot).rem_euclid(TAU);
-        self.focus_pitch =
-            (self.focus_pitch + delta_pitch).clamp(-PI / 2.0 + 0.05, PI / 2.0 - 0.05);
+        self.camera.pan(delta_rot, delta_pitch);
         self.dirty = true;
     }
 
@@ -1331,7 +1249,7 @@ impl App {
     }
 
     fn request_scoped_online(&mut self) {
-        let selected = if self.connection_browser_open {
+        let selected = if self.overlay.is_connection_browser() {
             self.visible_connections()
                 .get(self.connection_browser_index)
                 .map(|connection| (connection.provider, connection.online_profile()))
@@ -1360,90 +1278,9 @@ impl App {
     }
 
     fn update_camera_focus(&mut self) {
-        if !self.target().location_known() {
-            return;
-        }
-        let target_rotation = target_focus_rotation(self.target());
-        let target_pitch = target_focus_pitch(self.target());
-        let target_zoom = target_focus_zoom(self.target());
-
-        self.focus_rotation = target_rotation;
-        self.focus_pitch = target_pitch;
-        self.focus_zoom = target_zoom;
-
-        self.transition = Some(CameraTransition {
-            start_rotation: self.rotation,
-            target_rotation,
-            start_pitch: self.pitch,
-            target_pitch,
-            start_zoom: self.zoom,
-            target_zoom,
-            elapsed: Duration::ZERO,
-            duration: Duration::from_millis(1_400),
-        });
+        let target = self.target().clone();
+        self.camera.look_at(&target);
     }
-}
-
-fn target_focus_rotation(target: &Target) -> f64 {
-    target.location.longitude.to_radians()
-}
-
-fn target_focus_pitch(target: &Target) -> f64 {
-    target.location.latitude.to_radians()
-}
-
-fn target_focus_zoom(target: &Target) -> f64 {
-    match target.location.precision.as_str() {
-        "city" => 1.30,
-        "country" => 1.18,
-        "region" => 1.10,
-        _ => 1.0,
-    }
-}
-
-fn approach_angle(current: f64, target: f64, max_step: f64) -> f64 {
-    let delta = shortest_angle(target - current);
-    if delta.abs() <= 0.0005 {
-        target
-    } else {
-        let ease_rate = (delta * 3.5).clamp(-max_step, max_step);
-        let min_rate = (max_step * 0.25).min(delta.abs());
-        let step = if ease_rate.abs() < min_rate {
-            delta.signum() * min_rate
-        } else {
-            ease_rate
-        };
-        current + step
-    }
-}
-
-fn approach_value(current: f64, target: f64, max_step: f64) -> f64 {
-    let delta = target - current;
-    if delta.abs() <= 0.0005 {
-        target
-    } else {
-        let ease_rate = (delta * 3.0).clamp(-max_step, max_step);
-        let min_rate = (max_step * 0.25).min(delta.abs());
-        let step = if ease_rate.abs() < min_rate {
-            delta.signum() * min_rate
-        } else {
-            ease_rate
-        };
-        current + step
-    }
-}
-
-fn smootherstep(t: f64) -> f64 {
-    let t = t.clamp(0.0, 1.0);
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-fn lerp(start: f64, end: f64, amount: f64) -> f64 {
-    start + (end - start) * amount
-}
-
-fn shortest_angle(angle: f64) -> f64 {
-    (angle + PI).rem_euclid(TAU) - PI
 }
 
 #[cfg(test)]
